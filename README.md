@@ -48,7 +48,7 @@ Every decision emits a trace event. The UI polls the run and shows rejected conc
 - **Swiss rounds** above that, pairing neighbours in the standings for log2(n) rounds, so 16 concepts need 32 matches rather than 120.
 - **Configurable:** `--tournament auto|round-robin|swiss` and `--round-robin-max N` on the CLI, or the Tournament menu in the UI. Fields of 3 or fewer always get round-robin.
 - **Byes** go to the lowest-ranked contender that hasn't had one, so nobody goes unjudged.
-- **Ties** break on head-to-head, then on the judge's confidence.
+- **Ties** between two break on head-to-head. Ties of three or more break on the judge's summed confidence, because head-to-head can go in a circle (a beat b, b beat c, c beat a).
 
 **Check the judge for position bias.** Each match runs twice with the order swapped. If the two verdicts disagree, the match is marked order-biased in the UI and decided by confidence. Running both orders in parallel with `Promise.allSettled` means one failed call doesn't lose the match.
 

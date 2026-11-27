@@ -131,15 +131,28 @@ export async function tournament(
     }
   }
 
-  const ranked = [...field].sort((x, y) => {
-    const dw = wins.get(y.concept.id)! - wins.get(x.concept.id)!
+  return { ranked: rankStandings(field, wins, conf, h2h), matches }
+}
+
+/**
+ * Order by wins. A two-way tie breaks on the head-to-head result; ties of three or more break on
+ * summed confidence, because head-to-head can be circular there (a beat b, b beat c, c beat a)
+ * and would leave the order to whatever order the field arrived in.
+ */
+export function rankStandings(field: Contender[], wins: Map<string, number>, conf: Map<string, number>, h2h: Map<string, string>): Contender[] {
+  const tied = new Map<number, number>()
+  for (const c of field) tied.set(wins.get(c.concept.id)!, (tied.get(wins.get(c.concept.id)!) ?? 0) + 1)
+  return [...field].sort((x, y) => {
+    const wx = wins.get(x.concept.id)!
+    const dw = wins.get(y.concept.id)! - wx
     if (dw) return dw
-    const direct = h2h.get(key(x.concept.id, y.concept.id))
-    if (direct === x.concept.id) return -1
-    if (direct === y.concept.id) return 1
+    if (tied.get(wx) === 2) {
+      const direct = h2h.get(key(x.concept.id, y.concept.id))
+      if (direct === x.concept.id) return -1
+      if (direct === y.concept.id) return 1
+    }
     return conf.get(y.concept.id)! - conf.get(x.concept.id)!
   })
-  return { ranked, matches }
 }
 
 /** Pair neighbours in the standings, avoiding rematches where possible. Pool must be even. */
@@ -156,6 +169,6 @@ function pairUp(order: Contender[], played: Map<string, string>): Array<[Contend
   return pairs
 }
 
-function key(a: string, b: string) {
+export function key(a: string, b: string) {
   return [a, b].sort().join('|')
 }

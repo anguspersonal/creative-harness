@@ -4,7 +4,7 @@ import { effectiveScore, normaliseCritique } from '../src/harness/critic.ts'
 import { diverge } from '../src/harness/director.ts'
 import { criticPrompt, revisePrompt } from '../src/prompts.ts'
 import { runHarness } from '../src/harness/loop.ts'
-import { resolveFormat, tournament } from '../src/harness/selector.ts'
+import { key, rankStandings, resolveFormat, tournament } from '../src/harness/selector.ts'
 import { Run } from '../src/trace.ts'
 import type { Concept } from '../src/types.ts'
 import { config } from '../src/config.ts'
@@ -80,6 +80,22 @@ describe('tournament', () => {
     const field = Array.from({ length: 9 }, (_, i) => ({ concept: fakeConcept(i) }))
     const { matches } = await tournament('brief', field, 'T', undefined, { format: 'round-robin' })
     expect(matches).toHaveLength(36)
+  })
+  test('a three-way circular tie breaks on confidence, whatever order the field arrives in', () => {
+    const field = Array.from({ length: 3 }, (_, i) => ({ concept: fakeConcept(i) }))
+    const [a, b, c] = field.map((f) => f.concept.id) as [string, string, string]
+    const wins = new Map([[a, 1], [b, 1], [c, 1]])
+    const conf = new Map([[a, 0.5], [b, 0.9], [c, 0.7]])
+    const h2h = new Map([[key(a, b), a], [key(b, c), b], [key(a, c), c]])
+    for (const order of [field, [...field].reverse(), [field[1]!, field[2]!, field[0]!]]) {
+      expect(rankStandings(order, wins, conf, h2h).map((f) => f.concept.id)).toEqual([b, c, a])
+    }
+  })
+  test('a two-way tie still breaks on head-to-head over confidence', () => {
+    const field = Array.from({ length: 2 }, (_, i) => ({ concept: fakeConcept(i) }))
+    const [a, b] = field.map((f) => f.concept.id) as [string, string]
+    const ranked = rankStandings(field, new Map([[a, 1], [b, 1]]), new Map([[a, 0.9], [b, 0.1]]), new Map([[key(a, b), b]]))
+    expect(ranked[0]!.concept.id).toBe(b)
   })
   test('sanitiseOptions keeps valid formats and drops unknown ones', () => {
     expect(sanitiseOptions({ tournament: 'swiss', roundRobinMax: 99 })).toEqual({ tournament: 'swiss', roundRobinMax: 16 })
