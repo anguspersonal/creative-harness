@@ -21,6 +21,10 @@ export const config = {
   runsDir: env.RUNS_DIR ?? 'runs',
 }
 
+/** How a field is ranked. 'auto' picks round-robin up to `roundRobinMax` contenders, Swiss above that. */
+export type TournamentFormat = 'auto' | 'round-robin' | 'swiss'
+export const TOURNAMENT_FORMATS: readonly TournamentFormat[] = ['auto', 'round-robin', 'swiss']
+
 export type HarnessOptions = {
   /** How many concepts the director generates. Wider = more chance of something good. */
   concepts: number
@@ -36,6 +40,10 @@ export type HarnessOptions = {
   patience: number
   /** Animate the winning image at the end (slow and costs more). */
   video: boolean
+  /** Round-robin judges every pair (n(n-1)/2 matches); Swiss plays log2(n) rounds (about n log n / 2 matches). */
+  tournament: TournamentFormat
+  /** With tournament 'auto': fields up to this size use round-robin, larger fields use Swiss. */
+  roundRobinMax: number
 }
 
 export const defaultOptions: HarnessOptions = {
@@ -46,6 +54,8 @@ export const defaultOptions: HarnessOptions = {
   plateau: 0.5,
   patience: 1,
   video: false,
+  tournament: 'auto',
+  roundRobinMax: 8,
 }
 
 /** Clamp user-supplied options (UI or CLI) to sane bounds. Invalid values are dropped. */
@@ -57,10 +67,13 @@ export function sanitiseOptions(o: Partial<Record<keyof HarnessOptions, unknown>
   const finalists = int(o.finalists, 1, 6)
   const maxIters = int(o.maxIters, 0, 6)
   const patience = int(o.patience, 0, 3)
+  const roundRobinMax = int(o.roundRobinMax, 2, 16)
   if (concepts !== undefined) out.concepts = concepts
   if (finalists !== undefined) out.finalists = finalists
   if (maxIters !== undefined) out.maxIters = maxIters
   if (patience !== undefined) out.patience = patience
+  if (roundRobinMax !== undefined) out.roundRobinMax = roundRobinMax
   if (typeof o.video === 'boolean') out.video = o.video
+  if (TOURNAMENT_FORMATS.includes(o.tournament as TournamentFormat)) out.tournament = o.tournament as TournamentFormat
   return out
 }

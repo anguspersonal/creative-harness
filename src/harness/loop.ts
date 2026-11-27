@@ -41,7 +41,8 @@ export async function runHarness(run: Run, o: HarnessOptions): Promise<void> {
   run.emit('diverge', `${concepts.length} concepts across axes: ${concepts.map((c) => c.axis).join(', ')}`)
 
   // 2. Select
-  const { ranked } = await tournament(brief, concepts.map((concept) => ({ concept })), 'Concepts', run)
+  const format = { format: o.tournament, roundRobinMax: o.roundRobinMax }
+  const { ranked } = await tournament(brief, concepts.map((concept) => ({ concept })), 'Concepts', run, format)
   const finalists = ranked.slice(0, o.finalists).map((c) => c.concept)
   for (const c of concepts) c.status = finalists.includes(c) ? 'finalist' : 'eliminated'
   run.emit('select', `Finalists: ${finalists.map((c) => `${c.id} "${c.title}"`).join(', ')}`)
@@ -78,6 +79,7 @@ export async function runHarness(run: Run, o: HarnessOptions): Promise<void> {
         bests.map((b) => ({ concept: b.concept, imageUrl: b.render.url })),
         'Showdown',
         run,
+        format,
       )
       if (matches.length > 0) {
         winner = bests.find((b) => b.concept.id === final[0]!.concept.id)!

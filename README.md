@@ -26,7 +26,7 @@ brief
 1. diverge     director LLM writes N concepts, each forced onto a different axis
   │            (emotional register, format, hook mechanism, point of view...)
   ▼
-2. select      Swiss tournament of pairwise judgements on the text alone.
+2. select      tournament of pairwise judgements on the text alone (round-robin up to 8, Swiss above).
   │            Every match is judged twice with A and B swapped, to catch position bias.
   ▼
 3. develop     for each of K finalists, in parallel:
@@ -44,8 +44,9 @@ Every decision emits a trace event. The UI polls the run and shows rejected conc
 ## Design decisions
 
 **Choose with pairwise comparisons, not scores.** LLMs are poor at absolute scores ("7/10") and much better at "which of these two is better, and why". Selection is a tournament of comparisons:
-- **Swiss rounds** for large fields, so 8 concepts need 12 matches rather than 28.
-- **Round-robin** for 3 or fewer, so the final pick is always settled by a direct match.
+- **Round-robin** up to 8 contenders (the default `tournament: 'auto'`, threshold `roundRobinMax`), so every pair is decided directly. 8 concepts means 28 matches.
+- **Swiss rounds** above that, pairing neighbours in the standings for log2(n) rounds, so 16 concepts need 32 matches rather than 120.
+- **Configurable:** `--tournament auto|round-robin|swiss` and `--round-robin-max N` on the CLI, or the Tournament menu in the UI. Fields of 3 or fewer always get round-robin.
 - **Byes** go to the lowest-ranked contender that hasn't had one, so nobody goes unjudged.
 - **Ties** break on head-to-head, then on the judge's confidence.
 

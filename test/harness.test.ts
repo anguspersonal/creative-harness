@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import { defaultOptions } from '../src/config.ts'
+import { defaultOptions, sanitiseOptions } from '../src/config.ts'
 import { effectiveScore, normaliseCritique } from '../src/harness/critic.ts'
 import { diverge } from '../src/harness/director.ts'
 import { criticPrompt, revisePrompt } from '../src/prompts.ts'
 import { runHarness } from '../src/harness/loop.ts'
-import { tournament } from '../src/harness/selector.ts'
+import { resolveFormat, tournament } from '../src/harness/selector.ts'
 import { Run } from '../src/trace.ts'
 import type { Concept } from '../src/types.ts'
 import { config } from '../src/config.ts'
@@ -50,18 +50,48 @@ describe('createLimiter', () => {
 })
 
 describe('tournament', () => {
-  test('ranks every contender and plays log2(n) rounds', async () => {
+  test('swiss: ranks every contender and plays log2(n) rounds', async () => {
     const field = Array.from({ length: 8 }, (_, i) => ({ concept: fakeConcept(i) }))
-    const { ranked, matches } = await tournament('brief', field, 'T')
+    const { ranked, matches } = await tournament('brief', field, 'T', undefined, { format: 'swiss' })
     expect(ranked).toHaveLength(8)
     expect(new Set(ranked.map((c) => c.concept.id)).size).toBe(8)
     expect(matches).toHaveLength(3 * 4)
     expect(matches.every((m) => m.consistent)).toBe(true)
   })
-  test('odd field gives a bye without crashing', async () => {
+  test('swiss: odd field gives a bye without crashing', async () => {
     const field = Array.from({ length: 5 }, (_, i) => ({ concept: fakeConcept(i) }))
-    const { ranked } = await tournament('brief', field, 'T')
+    const { ranked } = await tournament('brief', field, 'T', undefined, { format: 'swiss' })
     expect(ranked).toHaveLength(5)
+  })
+  test('default: 8 contenders get a round-robin, every pair judged exactly once', async () => {
+    const field = Array.from({ length: 8 }, (_, i) => ({ concept: fakeConcept(i) }))
+    const { ranked, matches } = await tournament('brief', field, 'T')
+    expect(ranked).toHaveLength(8)
+    expect(matches).toHaveLength(28)
+    expect(new Set(matches.map((m) => [m.a, m.b].sort().join('|'))).size).toBe(28)
+  })
+  test('default: 9 contenders switch to Swiss', async () => {
+    const field = Array.from({ length: 9 }, (_, i) => ({ concept: fakeConcept(i) }))
+    const { ranked, matches } = await tournament('brief', field, 'T')
+    expect(ranked).toHaveLength(9)
+    expect(matches.length).toBeLessThan(36)
+  })
+  test('forced round-robin applies above the auto threshold', async () => {
+    const field = Array.from({ length: 9 }, (_, i) => ({ concept: fakeConcept(i) }))
+    const { matches } = await tournament('brief', field, 'T', undefined, { format: 'round-robin' })
+    expect(matches).toHaveLength(36)
+  })
+  test('sanitiseOptions keeps valid formats and drops unknown ones', () => {
+    expect(sanitiseOptions({ tournament: 'swiss', roundRobinMax: 99 })).toEqual({ tournament: 'swiss', roundRobinMax: 16 })
+    expect(sanitiseOptions({ tournament: 'knockout' })).toEqual({})
+  })
+  test('resolveFormat: threshold, forced formats, and tiny fields', () => {
+    expect(resolveFormat(8)).toBe('round-robin')
+    expect(resolveFormat(9)).toBe('swiss')
+    expect(resolveFormat(6, { roundRobinMax: 5 })).toBe('swiss')
+    expect(resolveFormat(16, { format: 'round-robin' })).toBe('round-robin')
+    expect(resolveFormat(8, { format: 'swiss' })).toBe('swiss')
+    expect(resolveFormat(3, { format: 'swiss' })).toBe('round-robin')
   })
 })
 

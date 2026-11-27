@@ -79,6 +79,9 @@
     <div class="row"><label>Concepts</label><input id="concepts" type="number" min="2" max="16" /></div>
     <div class="row"><label>Finalists</label><input id="finalists" type="number" min="1" max="6" /></div>
     <div class="row"><label>Revise rounds</label><input id="iters" type="number" min="0" max="6" /></div>
+    <div class="row"><label>Tournament</label><select id="tournament" style="width:auto">
+      <option value="auto">Auto (round-robin up to 8)</option><option value="round-robin">Round-robin</option><option value="swiss">Swiss</option>
+    </select></div>
     <div class="row"><label>Animate winner (video)</label><input id="video" type="checkbox" style="width:auto" /></div>
     <button id="go">Run harness</button>
     <h2 style="margin-top:12px">Runs</h2>
@@ -100,6 +103,8 @@ async function boot() {
   $('finalists').value = health.defaults.finalists
   $('iters').value = health.defaults.maxIters
   $('video').checked = health.defaults.video
+  $('tournament').value = health.defaults.tournament
+  $('tournament').options[0].textContent = `Auto (round-robin up to ${health.defaults.roundRobinMax})`
   const briefs = await fetch('/api/briefs').then((r) => r.json())
   for (const b of briefs) $('presets').insertAdjacentHTML('beforeend', `<option>${esc(b.name)}</option>`)
   $('presets').onchange = () => { const b = briefs.find((x) => x.name === $('presets').value); if (b) $('brief').value = b.text }
@@ -113,7 +118,7 @@ async function start() {
   if (!brief) return $('brief').focus()
   $('go').disabled = true
   const res = await fetch('/api/runs', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ brief, options: {
-    concepts: +$('concepts').value, finalists: +$('finalists').value, maxIters: +$('iters').value, video: $('video').checked } }) }).then((r) => r.json())
+    concepts: +$('concepts').value, finalists: +$('finalists').value, maxIters: +$('iters').value, video: $('video').checked, tournament: $('tournament').value } }) }).then((r) => r.json())
   $('go').disabled = false
   if (res.id) open(res.id)
 }
