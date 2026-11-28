@@ -19,6 +19,9 @@ export const config = {
   concurrency: positiveInt('CONCURRENCY', 2),
   port: positiveInt('PORT', 3000),
   runsDir: env.RUNS_DIR ?? 'runs',
+  // The video verifier decodes clips with ffmpeg. Found on PATH unless these say otherwise.
+  ffmpeg: env.FFMPEG_PATH || 'ffmpeg',
+  ffprobe: env.FFPROBE_PATH || 'ffprobe',
 }
 
 /** How a field is ranked. 'auto' picks round-robin up to `roundRobinMax` contenders, Swiss above that. */
@@ -40,6 +43,8 @@ export type HarnessOptions = {
   patience: number
   /** Animate the winning image at the end (slow and costs more). */
   video: boolean
+  /** How many clips to render at most: each one is checked, and a flagged clip is retried with a revised motion prompt. */
+  videoAttempts: number
   /** Round-robin judges every pair (n(n-1)/2 matches); Swiss plays log2(n) rounds (about n log n / 2 matches). */
   tournament: TournamentFormat
   /** With tournament 'auto': fields up to this size use round-robin, larger fields use Swiss. */
@@ -54,6 +59,7 @@ export const defaultOptions: HarnessOptions = {
   plateau: 0.5,
   patience: 1,
   video: false,
+  videoAttempts: 2,
   tournament: 'auto',
   roundRobinMax: 8,
 }
@@ -68,11 +74,13 @@ export function sanitiseOptions(o: Partial<Record<keyof HarnessOptions, unknown>
   const maxIters = int(o.maxIters, 0, 6)
   const patience = int(o.patience, 0, 3)
   const roundRobinMax = int(o.roundRobinMax, 2, 16)
+  const videoAttempts = int(o.videoAttempts, 1, 4)
   if (concepts !== undefined) out.concepts = concepts
   if (finalists !== undefined) out.finalists = finalists
   if (maxIters !== undefined) out.maxIters = maxIters
   if (patience !== undefined) out.patience = patience
   if (roundRobinMax !== undefined) out.roundRobinMax = roundRobinMax
+  if (videoAttempts !== undefined) out.videoAttempts = videoAttempts
   if (typeof o.video === 'boolean') out.video = o.video
   if (TOURNAMENT_FORMATS.includes(o.tournament as TournamentFormat)) out.tournament = o.tournament as TournamentFormat
   return out

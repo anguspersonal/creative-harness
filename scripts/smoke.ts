@@ -1,5 +1,6 @@
 import { fal } from '@fal-ai/client'
 import { config } from '../src/config.ts'
+import { verifyVideo } from '../src/harness/verifier.ts'
 import { complete } from '../src/llm.ts'
 import { generateMedia } from '../src/media.ts'
 import { LLM, SPECS, type MediaSpec } from '../src/models.ts'
@@ -8,7 +9,7 @@ import { LLM, SPECS, type MediaSpec } from '../src/models.ts'
 // works with your account, and tells you real latency and cost.
 //
 //   bun run smoke                    LLM text + vision, draft and final image models
-//   bun run smoke --video            also the default video model (~$0.20)
+//   bun run smoke --video            also the default video model and the video verifier (~$0.30, needs ffmpeg)
 //   bun run smoke --all              every spec in models.ts (~$1.50)
 //   bun run smoke --parallel 6       fire 6 draft renders at once to see your concurrency cap
 
@@ -67,7 +68,24 @@ if (args.includes('--all')) {
 
 if (args.includes('--video') || args.includes('--all')) {
   console.log('\nVideo')
-  if (imageUrl) await media(SPECS.h3TurboI2V, { imageUrl, seconds: 5 })
+  let videoUrl = ''
+  if (imageUrl) {
+    await step(SPECS.h3TurboI2V.endpoint, async () => {
+      const r = await generateMedia(SPECS.h3TurboI2V, { prompt: PROMPT, imageUrl, seconds: 5 })
+      videoUrl = r.url
+      return `~$${r.estUsd.toFixed(4)} ${r.url}`
+    })
+  }
+  // The whole verifier path against your account: download, ffmpeg, frame upload, and vision calls on those frames.
+  if (videoUrl) {
+    await step('video verifier (ffmpeg, frame upload, vision)', async () => {
+      const c = await verifyVideo({ concept: { title: 'Lighthouse keeper', hook: 'He turns the page', idea: PROMPT }, source: videoUrl, label: 'smoke' })
+      if (!c.signals) throw new Error(c.unchecked.join('; '))
+      if (c.unchecked.length) throw new Error(`some checks did not run: ${c.unchecked.join('; ')}`)
+      const frames = c.hook ? (c.hook.frames[0]?.url.startsWith('http') ? 'frames uploaded' : 'upload failed, frames sent inline') : 'no model checks needed'
+      return `${c.signals.frames} frames measured, ${frames}, verdict ${c.verdict}${c.flags.length ? ` (${c.flags.map((f) => f.flag).join('; ')})` : ''}`
+    })
+  }
   if (args.includes('--all')) {
     if (imageUrl) await media(SPECS.klingV4I2V, { imageUrl, seconds: 5 })
     await media(SPECS.flux3MaxT2V, { seconds: 5 })

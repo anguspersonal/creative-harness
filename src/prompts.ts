@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
-import type { Concept, Critique } from './types.ts'
+import type { Concept, Critique, MotionConcept, VideoFlag } from './types.ts'
+import type { Moment, Signals } from './video/signals.ts'
 
 // All prompt wording lives here so you can tune it on the day without touching the loop.
 
@@ -120,6 +121,124 @@ export function revisePrompt(c: Concept, prompt: string, critique: Critique, fai
 
 export function motionPrompt(c: Concept) {
   return `${c.idea}. ${c.hook}. Subtle, purposeful camera movement; the key action happens in the first second.`
+}
+
+// ---- Video verifier. The measurements in video/signals.ts decide WHEN to look; these prompts ask
+// one narrow question each about the frames chosen. None of them asks "is this video good?".
+
+/** Re-read on every call, like rubric.md, so motion criteria can be tuned while the server runs. */
+export function videoRubric(): string {
+  try {
+    return readFileSync('rubric.video.md', 'utf8')
+  } catch {
+    return '(rubric.video.md missing)'
+  }
+}
+
+export const VERIFIER_SYSTEM = `You inspect still frames taken from a short generated video clip. Report only what is visible in the frames you are shown.
+The frames were chosen by measuring the pixels of every frame, and each comes with its timestamp. Compare them with each other closely: small differences between neighbouring frames are the point.
+Generated video fails in ways camera footage never does: things appear from nowhere, vanish, melt, merge, or change shape, count or identity, and the shot can jump. Name these precisely when you see them. Do not invent them when you do not: ordinary fast movement and motion blur are not faults.`
+
+const seconds = (ts: number[]) => ts.map((t) => `${t.toFixed(2)}s`).join(', ')
+
+function videoContext(c: MotionConcept) {
+  const moment = c.moment ? `\nMoment: ${c.moment}` : ''
+  return `VIDEO RUBRIC:\n${videoRubric()}\n\nCONCEPT:\nTitle: ${c.title}\nHook: ${c.hook}\nIdea: ${c.idea}${moment}`
+}
+
+/** What the measurements say about the opening, in words the model can use. */
+function measuredStart(s: Signals) {
+  const moving = Math.round((1 - s.firstSecondStill) * 100)
+  const start = s.firstMoveAt === null ? 'no sustained movement was measured anywhere' : `sustained movement was first measured at ${s.firstMoveAt.toFixed(2)}s`
+  return `MEASURED FROM THE PIXELS: the picture changes in ${moving}% of the first second's frames; ${start}; the first second holds ${s.hookRatio}x the movement of the rest of the clip.`
+}
+
+export function hookCheckPrompt(c: MotionConcept, times: number[], s: Signals) {
+  return `${videoContext(c)}
+
+These ${times.length} images are frames from the FIRST SECOND of the clip, in order, at ${seconds(times)}.
+${measuredStart(s)}
+
+1. "changes": what visibly changes between the first image and the last? If nothing does, say so.
+2. "eventStarted": by the last image, has someone or something in the scene started doing something a person scrolling past would notice? Camera drift, flicker and tiny shifts do not count.
+
+JSON: {"changes":"one sentence","eventStarted":true|false}`
+}
+
+const WHY: Record<Moment['kind'], (m: Moment) => string> = {
+  jump: (m) => `the whole picture changed suddenly, ${m.ratio} times more than in the frames around it`,
+  pop: (m) => `part of the picture changed for a single frame and changed back, ${m.ratio} times more than in the frames around it`,
+  // Says only what was measured. Telling the model that faults are likely here would invite it to find one.
+  fastest: () => 'the picture was changing faster than anywhere else in the clip',
+}
+
+export function inspectPrompt(c: MotionConcept, m: Moment, times: number[], zoomed: boolean) {
+  const shown = zoomed
+    ? `Images 1 to ${times.length} show the SAME zoomed-in area of the frame at ${seconds(times)}, in order. The last image is the whole frame at ${m.t.toFixed(2)}s, for context.`
+    : `The images are whole frames at ${seconds(times)}, in order.`
+  return `${videoContext(c)}
+
+Every frame of this clip was measured. At ${m.t.toFixed(2)}s ${WHY[m.kind](m)}.
+${shown}
+
+1. "changed": describe exactly what is different between the images: what moved, appeared, vanished or changed shape.
+2. "kind": classify it.
+   - "motion": something moved the way it would in camera footage. Speed and motion blur are fine.
+   - "cut": the shot changed to a different framing, angle or scene.
+   - "fault": a generation fault. Something appears from nowhere, vanishes, flickers, melts, merges, or changes shape, count or identity.
+3. "flag": if "fault", the motion slop flag from the rubric that fits best. Otherwise "".
+4. "confidence": how sure you are of the classification.
+
+JSON: {"changed":"one sentence","kind":"motion"|"cut"|"fault","flag":"","confidence":0-1}`
+}
+
+export function driftCheckPrompt(c: MotionConcept, times: number[]) {
+  return `${videoContext(c)}
+
+These ${times.length} images are the first frame, the middle frame and the last frame of the clip (${seconds(times)}).
+The clip is meant to be one continuous shot. Things are supposed to move; they are not supposed to turn into something else.
+
+Compare the first and last images closely. List anything that is no longer the same person, object, text or place: a face, hair or clothing that changed; an object that changed shape, colour or count; a hand with a different number of fingers; lettering that changed; a background that became somewhere else.
+Do not list the action itself or its natural results (something poured, picked up, opened, moved, or a camera that moved).
+
+JSON: {"consistent":true|false,"changes":[{"what":"","evidence":""}]}
+Leave "changes" as [] if everything stays itself.`
+}
+
+export function actionCheckPrompt(c: MotionConcept, times: number[]) {
+  return `${videoContext(c)}
+
+These ${times.length} images are frames spread evenly across the whole clip, in order, at ${seconds(times)}.
+
+1. "beats": what happens, one short line per step, using only what the frames show.
+2. "sceneChanges": does anything IN the scene move or change (true), or does only the camera move (false)?
+3. "deliversMoment": is what happens the concept's moment, or its direct consequence?
+4. "impossible": anything camera footage could not show: things passing through each other, liquid going the wrong way, objects arriving from nowhere, movement running backwards. [] if none.
+5. "score": 0-10 against the rubric's Motion criteria. Do not lower it for faults: report those in the fields above.
+6. "fixes": at most two changes to the motion prompt that would help. [] if none.
+
+JSON: {"beats":["..."],"sceneChanges":true|false,"deliversMoment":true|false,"impossible":[{"what":"","evidence":""}],"score":0-10,"fixes":["..."]}`
+}
+
+export const MOTION_REVISER_SYSTEM = `You rewrite the motion prompt for an image-to-video model. The first frame is fixed, so describe only what moves.
+Rules:
+- One continuous shot. One subject does one physical action, named with a plain verb, starting on the first frame.
+- Under 50 words. Do not describe how the scene looks: the image already decides that.
+- Frozen, dead first second, or only the camera moves: say who or what moves and how, say it begins at once, and lock the camera off.
+- Pop, flicker, morphing, identity drift or impossible motion: ask for less. Fewer things moving, smaller and slower movement, camera locked off, hands and faces kept simple. Never ask for anything to transform.
+- Unintended cut: say "single continuous shot, fixed camera, no cuts".
+- Motion misses the idea: make the movement the concept's moment.
+- Never ask for text, captions or new objects to appear.
+Name what you changed in one sentence.`
+
+/** An earlier motion prompt and what the verifier found wrong with the clip it produced. */
+export type FailedMotion = { prompt: string; flags: string[] }
+
+export function motionRevisePrompt(c: MotionConcept, prompt: string, flags: VideoFlag[], fixes: string[], tried: FailedMotion[] = []) {
+  const earlier = tried.length ? `\n\nEARLIER ATTEMPTS (do something different):\n${tried.map((t) => `- "${t.prompt}" -> ${t.flags.join('; ') || 'no flags'}`).join('\n')}` : ''
+  const found = flags.map((f) => `- ${f.flag}${f.at ? ` at ${f.at.toFixed(2)}s` : ''}: ${f.evidence}`).join('\n')
+  const moment = c.moment ? `\nMoment: ${c.moment}` : ''
+  return `CONCEPT:\nTitle: ${c.title}\nHook: ${c.hook}\nIdea: ${c.idea}${moment}\n\nCURRENT MOTION PROMPT:\n${prompt}\n\nTHE VERIFIER FOUND:\n${found || '- nothing specific'}\nSuggested: ${fixes.join('; ') || 'none'}${earlier}\n\nJSON: {"motionPrompt":"","changeSummary":""}`
 }
 
 function describe(c: Concept) {

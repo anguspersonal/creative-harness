@@ -7,7 +7,8 @@ const AXES = ['deadpan humour', 'intimate close-up', 'scale contrast', 'unexpect
 
 export async function mockLlm(call: LlmCall): Promise<string> {
   await Bun.sleep(80)
-  // MOCK_FAIL=<regex> makes matching calls throw, to rehearse failures. Vision calls match as "<task>:vision".
+  // MOCK_FAIL=<regex> makes matching calls throw, to rehearse failures. Vision calls match as "<task>:vision";
+  // renders match as "media.<kind>" (see media.ts).
   const fail = process.env.MOCK_FAIL
   const tag = `${call.task}${call.imageUrls?.length ? ':vision' : ''}`
   if (fail && new RegExp(fail).test(tag)) throw new Error(`mock failure for ${tag}`)
@@ -63,9 +64,46 @@ export async function mockLlm(call: LlmCall): Promise<string> {
       const changeSummary = tried ? `Moved subject off-centre (avoiding ${tried} failed attempt(s)).` : 'Moved subject off-centre and added a specific detail.'
       return JSON.stringify({ visualPrompt: `${prev}, subject off-centre, one odd specific detail`, changeSummary })
     }
+    // The video checks answer from the fault built into the mock clip (video/clip.ts mockClip), which they
+    // read from the frames they are sent, so each check behaves as it would on a real clip with that fault.
+    case 'video.hook': {
+      const dead = ['slow', 'frozen'].includes(scenario(call))
+      return JSON.stringify({ changes: dead ? 'Nothing changes between the first frame and the last.' : 'The ball has started to cross the frame.', eventStarted: !dead })
+    }
+    case 'video.inspect': {
+      const sudden = /changed suddenly|for a single frame/.test(call.prompt)
+      if (sudden && scenario(call) === 'pop') return JSON.stringify({ changed: 'A white block appears at the top right for one frame and is gone in the next.', kind: 'fault', flag: 'Pop or flicker', confidence: 0.9 })
+      if (sudden && scenario(call) === 'cut') return JSON.stringify({ changed: 'The background flips and the ball jumps to the other side of the frame.', kind: 'cut', flag: '', confidence: 0.9 })
+      return JSON.stringify({ changed: 'The ball moves along its path.', kind: 'motion', flag: '', confidence: 0.8 })
+    }
+    case 'video.drift': {
+      const drifted = scenario(call) === 'morph'
+      return JSON.stringify({ consistent: !drifted, changes: drifted ? [{ what: 'The ball is no longer the same shape', evidence: 'round in the first frame, lopsided in the last' }] : [] })
+    }
+    case 'video.action': {
+      const clean = scenario(call) === 'ok'
+      return JSON.stringify({
+        beats: ['A ball enters from the left', 'It rises and falls as it crosses the frame'],
+        sceneChanges: true,
+        deliversMoment: true,
+        impossible: [],
+        score: clean ? 7.5 : 6.5,
+        fixes: clean ? [] : ['Keep the movement to one simple action'],
+      })
+    }
+    case 'video.revise': {
+      const prev = call.prompt.match(/CURRENT MOTION PROMPT:\n([\s\S]*?)\n\nTHE VERIFIER FOUND/)?.[1] ?? ''
+      return JSON.stringify({ motionPrompt: `${prev} One simple continuous action from the first frame, fixed camera.`, changeSummary: 'Asked for one simple action from the first frame, with the camera locked off.' })
+    }
     default:
       return JSON.stringify({ note: `mock has no responder for ${call.task}` })
   }
+}
+
+/** Which fault the mock clip was built with, read from the mock frames sent with the call. */
+function scenario(call: LlmCall): string {
+  const first = call.imageUrls?.[0] ?? ''
+  return /scenario=(\w+)/.exec(first.startsWith('data:') ? decodeURIComponent(first) : '')?.[1] ?? 'ok'
 }
 
 function score(title: string) {

@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { config, defaultOptions, sanitiseOptions } from './config.ts'
 import { startRun } from './harness/loop.ts'
 import { getRun, listRuns, reconcileOrphanedRuns } from './trace.ts'
+import { ffmpegAvailable } from './video/clip.ts'
 
 // Minimal API + static UI. The UI polls /api/runs/:id, which is the whole trace.
 // For the live demo use `bun run start` (no --watch): a file save would restart the
@@ -17,7 +18,7 @@ const server = Bun.serve({
   routes: {
     // Served per request so UI edits show on refresh without a restart.
     '/': () => new Response(Bun.file('public/index.html')),
-    '/api/health': () => json({ mock: config.mock, concurrency: config.concurrency, defaults: defaultOptions }),
+    '/api/health': () => json({ mock: config.mock, concurrency: config.concurrency, defaults: defaultOptions, ffmpeg: ffmpegAvailable() }),
     '/api/briefs': () => {
       const files = safeList('briefs').filter((f) => f.endsWith('.md'))
       return json(files.map((f) => ({ name: f, text: readFileSync(`briefs/${f}`, 'utf8') })))

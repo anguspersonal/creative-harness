@@ -59,6 +59,20 @@
   .concept b { display:block; font-size:13px; margin-bottom:4px; }
   table { width:100%; border-collapse:collapse; font-size:12px; }
   td { padding:4px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  .chip.warn { background:#3a2f17; color:var(--warn); }
+  .vcheck { display:flex; gap:16px; padding:12px; background:var(--panel); border:1px solid var(--line); border-radius:8px; margin-bottom:12px; }
+  .vcheck.best { border-color:var(--accent); }
+  .vcheck .vmedia { flex:none; }
+  .vcheck .vmedia img, .vcheck .vmedia video { width:170px; border-radius:6px; display:block; }
+  .vcheck .vbody { flex:1; min-width:0; font-size:12px; }
+  .vcheck .flagline { margin-top:5px; }
+  .spark { width:100%; height:74px; display:block; margin:10px 0 2px; }
+  .look { margin-top:12px; }
+  .look .frames { display:flex; gap:6px; overflow-x:auto; margin:5px 0 2px; }
+  .look figure { margin:0; flex:none; }
+  .look img { height:116px; border-radius:4px; display:block; border:1px solid var(--line); }
+  .look figure.ctx img { border-style:dashed; }
+  .look figcaption { margin-top:2px; font-size:11px; }
   .log { font:12px/1.5 ui-monospace,Menlo,monospace; max-height:320px; overflow:auto; white-space:pre-wrap; color:var(--dim); }
   .log .error { color:var(--bad); }
   .stage { color:var(--accent); }
@@ -83,6 +97,7 @@
       <option value="auto">Auto (round-robin up to 8)</option><option value="round-robin">Round-robin</option><option value="swiss">Swiss</option>
     </select></div>
     <div class="row"><label>Animate winner (video)</label><input id="video" type="checkbox" style="width:auto" /></div>
+    <div class="row"><label>Video attempts <span id="ffmpeg" class="muted"></span></label><input id="videoAttempts" type="number" min="1" max="4" /></div>
     <button id="go">Run harness</button>
     <h2 style="margin-top:12px">Runs</h2>
     <div class="runs" id="runs"></div>
@@ -103,6 +118,8 @@ async function boot() {
   $('finalists').value = health.defaults.finalists
   $('iters').value = health.defaults.maxIters
   $('video').checked = health.defaults.video
+  $('videoAttempts').value = health.defaults.videoAttempts
+  if (!health.mock && !health.ffmpeg) $('ffmpeg').textContent = '(no ffmpeg: clips will not be checked)'
   $('tournament').value = health.defaults.tournament
   $('tournament').options[0].textContent = `Auto (round-robin up to ${health.defaults.roundRobinMax})`
   const briefs = await fetch('/api/briefs').then((r) => r.json())
@@ -118,7 +135,7 @@ async function start() {
   if (!brief) return $('brief').focus()
   $('go').disabled = true
   const res = await fetch('/api/runs', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ brief, options: {
-    concepts: +$('concepts').value, finalists: +$('finalists').value, maxIters: +$('iters').value, video: $('video').checked, tournament: $('tournament').value } }) }).then((r) => r.json())
+    concepts: +$('concepts').value, finalists: +$('finalists').value, maxIters: +$('iters').value, video: $('video').checked, videoAttempts: +$('videoAttempts').value, tournament: $('tournament').value } }) }).then((r) => r.json())
   $('go').disabled = false
   if (res.id) open(res.id)
 }
@@ -157,6 +174,60 @@ function media(r) {
   return isVideo ? `<video src="${esc(r.url)}" autoplay loop muted playsinline controls></video>` : `<img src="${esc(r.url)}" loading="lazy" />`
 }
 
+const LOOKED = { jump: 'the whole frame changed suddenly', pop: 'one area changed for a single frame', fastest: 'fastest movement' }
+const sec = (t) => `${Number(t).toFixed(2)}s`
+
+function frames(list, context) {
+  const fig = (f, cls, note) => `<figure class="${cls}"><img src="${esc(f.url)}" loading="lazy" /><figcaption class="muted">${sec(f.t)}${note}</figcaption></figure>`
+  return `<div class="frames">${list.map((f) => fig(f, '', '')).join('')}${context ? fig(context, 'ctx', ' · whole frame') : ''}</div>`
+}
+
+// The motion curve: one value per frame pair, square-root scaled so a cut does not flatten everything else.
+function spark(check) {
+  const s = check.signals
+  if (!s || s.motion.length < 2) return ''
+  const W = 600, H = 74, top = 6, base = H - 14
+  const max = Math.sqrt(Math.max(...s.motion, 1))
+  const x = (pair) => (pair / (s.motion.length - 1)) * W
+  const xt = (t) => Math.min(W, (t / s.duration) * W)
+  const pts = s.motion.map((v, i) => `${x(i).toFixed(1)},${(base - (Math.sqrt(v) / max) * (base - top)).toFixed(1)}`).join(' ')
+  const marks = check.inspections.map((i) => {
+    const bad = i.finding && i.finding.kind !== 'motion'
+    return `<line x1="${xt(i.t)}" x2="${xt(i.t)}" y1="${top}" y2="${base}" stroke="${bad ? 'var(--bad)' : i.error ? 'var(--warn)' : 'var(--dim)'}" stroke-width="${bad ? 2 : 1}" stroke-dasharray="${bad ? '' : '3 3'}"/>`
+  }).join('')
+  return `<svg class="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Pixel change per frame across the clip">
+    <rect x="0" y="${top}" width="${xt(1)}" height="${base - top}" fill="#ffffff" opacity=".05"/>
+    ${marks}<polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"/>
+    <line x1="0" x2="${W}" y1="${base}" y2="${base}" stroke="var(--line)"/></svg>
+    <div class="row muted"><span>0s · first second shaded</span><span style="margin-left:auto">${s.duration}s</span></div>`
+}
+
+function videoCheck(v, kept) {
+  const c = v.videoCheck
+  const head = `<div class="lane-head"><b>Attempt ${v.version}</b><span>${kept ? 'kept · ' : ''}${esc(v.endpoint)}</span></div>`
+  const prompt = `${v.changeSummary ? `<div class="muted">↻ ${esc(v.changeSummary)}</div>` : ''}<div class="muted">motion prompt: ${esc(v.prompt)}</div>`
+  if (!c) return `<div class="vcheck"><div class="vmedia">${media(v)}</div><div class="vbody">${head}${prompt}<div class="muted">checking…</div></div></div>`
+  const s = c.signals
+  const verdict = c.verdict === 'pass' ? '<span class="chip ok">pass</span>' : c.verdict === 'retry' ? '<span class="chip slop">retry</span>' : '<span class="chip warn">not fully checked</span>'
+  const score = c.score === undefined ? '' : `<span class="score">${c.score}</span><span class="muted">/10${c.flags.length ? ` − ${c.flags.length} flag${c.flags.length > 1 ? 's' : ''}` : ''}</span>`
+  let h = `${head}<div class="row" style="justify-content:flex-start">${score} ${verdict}</div>${prompt}`
+  h += c.flags.map((f) => `<div class="flagline"><span class="chip slop">${esc(f.flag)}${f.at ? ` · ${sec(f.at)}` : ''}</span> <span class="chip ${f.source === 'measured' ? 'ok' : 'warn'}">${f.source}</span> ${esc(f.evidence)}</div>`).join('')
+  h += c.unchecked.map((u) => `<div class="flagline"><span class="chip warn">not checked</span> ${esc(u)}</div>`).join('')
+  if (s) {
+    h += spark(c)
+    h += `<div class="muted">Measured on all ${s.frames} frames (${s.fps}fps): ${Math.round((1 - s.stillShare) * 100)}% of them move · ${s.firstMoveAt === null ? 'no sustained movement' : `movement from ${sec(s.firstMoveAt)}`} · the first second holds ${s.hookRatio}× the movement of the rest</div>`
+  }
+  if (c.hook) h += `<div class="look"><b>First second</b> <span class="chip ${c.hook.eventStarted ? 'ok' : 'slop'}">${c.hook.eventStarted ? 'an event starts' : 'nothing starts'}</span> ${esc(c.hook.changes)}${frames(c.hook.frames)}</div>`
+  for (const i of c.inspections) {
+    const f = i.finding
+    const chip = !f ? `<span class="chip warn">not checked</span> ${esc(i.error ?? '')}` : `<span class="chip ${f.kind === 'motion' ? 'ok' : 'slop'}">${esc(f.kind === 'fault' ? f.flag || 'fault' : f.kind === 'cut' ? 'cut' : 'real movement')}</span> ${esc(f.changed)} <span class="muted">(${Math.round(f.confidence * 100)}% sure)</span>`
+    h += `<div class="look"><b>${sec(i.t)}</b> <span class="muted">${LOOKED[i.kind]}${i.kind === 'fastest' ? '' : `, ${i.ratio}× its neighbours`}${i.zoomed ? ' · zoomed into the area that changed' : ''}</span><br>${chip}${frames(i.frames, i.context)}</div>`
+  }
+  if (c.drift) h += `<div class="look"><b>Start to end</b> <span class="chip ${c.drift.consistent || !c.drift.changes.length ? 'ok' : 'slop'}">${c.drift.consistent || !c.drift.changes.length ? 'everything stays itself' : 'drift'}</span> ${esc(c.drift.changes.map((d) => d.what).join('; '))}${frames(c.drift.frames)}</div>`
+  if (c.action) h += `<div class="look"><b>Whole clip</b> <span class="muted">${esc(c.action.beats.join(' → '))}</span>${frames(c.action.frames)}</div>`
+  return `<div class="vcheck ${kept ? 'best' : ''}"><div class="vmedia">${media(v)}</div><div class="vbody">${h}</div></div>`
+}
+
 function render(run) {
   const elapsed = Math.round(((run.finishedAt ?? Date.now()) - run.startedAt) / 1000)
   $('status').hidden = false
@@ -178,6 +249,11 @@ function render(run) {
       <figure>${media(run.final.video ?? run.final.image)}<figcaption>final · ${run.final.image?.critique?.score ?? '–'}/10 <span class="muted">(full rubric)</span> · ${esc(run.final.image?.endpoint)}</figcaption></figure>
       <div><div class="reason"><b>${esc(c?.title)}</b><br>${esc(c?.hook)}</div><p class="muted">${esc(run.final.reason)}</p></div>
     </div></section>`
+  }
+
+  const videos = run.renders.filter((r) => r.kind === 'video')
+  if (videos.length) {
+    html += '<section><h2>Video check: every frame measured, then a closer look where it changed</h2>' + videos.map((v) => videoCheck(v, v.id === run.final?.video?.id)).join('') + '</section>'
   }
 
   const finalists = run.concepts.filter((c) => c.status === 'finalist' || c.status === 'winner')
