@@ -10,8 +10,8 @@ import { ffmpegAvailable } from './video/clip.ts'
 // bun run harness briefs/example.md --tournament swiss        (auto | round-robin | swiss)
 // bun run harness briefs/example.md --video --video-attempts 3   (each clip is checked; a flagged one is retried)
 
-const USAGE = 'Usage: bun run harness "<brief>" | <brief-file> [--video] [--concepts N] [--finalists K] [--iters N] [--patience N] [--video-attempts N] [--tournament auto|round-robin|swiss] [--round-robin-max N]'
-const NUMERIC = { concepts: 'concepts', finalists: 'finalists', iters: 'maxIters', patience: 'patience', 'round-robin-max': 'roundRobinMax', 'video-attempts': 'videoAttempts' } as const
+const USAGE = 'Usage: bun run harness "<brief>" | <brief-file> [--video] [--concepts N] [--finalists K] [--iters N] [--patience N] [--video-attempts N] [--motion-test N] [--tournament auto|round-robin|swiss] [--round-robin-max N]'
+const NUMERIC = { concepts: 'concepts', finalists: 'finalists', iters: 'maxIters', patience: 'patience', 'round-robin-max': 'roundRobinMax', 'video-attempts': 'videoAttempts', 'motion-test': 'motionTest' } as const
 
 const opts: Record<string, unknown> = { video: false }
 const positional: string[] = []

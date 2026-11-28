@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import type { Concept, Critique, MotionConcept, VideoFlag } from './types.ts'
+import type { Concept, Critique, MotionConcept, VideoCheck, VideoFlag } from './types.ts'
 import type { Moment, Signals } from './video/signals.ts'
 
 // All prompt wording lives here so you can tune it on the day without touching the loop.
@@ -64,8 +64,24 @@ export function compareTextPrompt(brief: string, a: Concept, b: Concept) {
 const SHOWDOWN_NOTE = `These are fast drafts. The winner will be re-rendered on a stronger model that draws text and hands properly.
 Do NOT judge garbled text, lettering or anatomy glitches. Judge idea, composition, focal point, lighting and brief fit.`
 
-export function compareImagePrompt(brief: string, a: Concept, b: Concept) {
-  return `RUBRIC:\n${rubric()}\n\nBRIEF:\n${brief}\n\n${SHOWDOWN_NOTE}\n\nImage 1 is OPTION A ("${a.title}"). Image 2 is OPTION B ("${b.title}").\nWhich draft should we take to the final render? JSON: {"winner":"A"|"B","reason":"one sentence","confidence":0-1}`
+export function compareImagePrompt(brief: string, a: Concept, b: Concept, aMotion?: string, bMotion?: string) {
+  const motion = aMotion || bMotion ? `\n\n${MOTION_NOTE}\nOPTION A MOTION TEST: ${aMotion ?? 'not run'}\nOPTION B MOTION TEST: ${bMotion ?? 'not run'}` : ''
+  return `RUBRIC:\n${rubric()}\n\nBRIEF:\n${brief}\n\n${SHOWDOWN_NOTE}${motion}\n\nImage 1 is OPTION A ("${a.title}"). Image 2 is OPTION B ("${b.title}").\nWhich draft should we take to the final render? JSON: {"winner":"A"|"B","reason":"one sentence","confidence":0-1}`
+}
+
+// Shown to the showdown judge when the finalists were given a cheap motion test before the choice.
+const MOTION_NOTE = `This will be a video. Each draft below was animated into a short, cheap clip and checked frame by frame.
+Weigh how it moves as heavily as how the still looks: a strong still whose clip is dead, broken or off-idea loses to a slightly weaker still that moves well.`
+
+/** One line of motion-test evidence for the showdown judge. Built from the verifier's own findings. */
+export function motionNote(check: VideoCheck | undefined): string | undefined {
+  if (!check) return undefined
+  const parts: string[] = []
+  if (check.hook) parts.push(`first second: ${check.hook.eventStarted ? 'an event starts' : 'nothing starts'}`)
+  if (check.action?.beats.length) parts.push(`what happens: ${check.action.beats.join(' / ')}`)
+  if (check.score !== undefined) parts.push(`motion score ${check.score}/10`)
+  parts.push(check.flags.length ? `faults: ${check.flags.map((f) => `${f.flag} (${f.evidence})`).join('; ')}` : check.verdict === 'pass' ? 'no faults found' : 'not fully checked')
+  return parts.join('. ')
 }
 
 /** For scripts/compare.ts: two finished posts, no titles, so the judge can't tell which run made which. */

@@ -145,6 +145,16 @@ export function mockScenarioFor(attempt: number): MockScenario {
 }
 
 /**
+ * MOCK_MOTION="slow,ok" scripts the motion test per finalist, in critic-score order. By default the top
+ * finalist's clip starts dead and the rest are clean, so a mock run shows the motion test changing the winner.
+ */
+export function mockMotionScenarioFor(index: number): MockScenario {
+  const scripted = process.env.MOCK_MOTION?.split(',')[index]?.trim()
+  if (scripted && (MOCK_SCENARIOS as readonly string[]).includes(scripted)) return scripted as MockScenario
+  return !process.env.MOCK_MOTION && index === 0 ? 'slow' : 'ok'
+}
+
+/**
  * A bright ball crossing a gradient, 5 seconds at 24fps, with one fault chosen by name:
  * frozen (nothing moves), slow (still for 1.6s), pop (a block appears for one frame at 2.5s),
  * cut (the scene flips at 2.5s), morph (measures clean; the mock vision model reports drift).

@@ -149,6 +149,8 @@ export type Render = {
   ms: number
   estUsd: number
   critique?: Critique
+  /** 'motion-test': a cheap clip of a finalist's draft, made before the showdown. Absent on every other render. */
+  stage?: 'motion-test'
   /** Set on video renders once the verifier has looked at them. */
   videoCheck?: VideoCheck
   changeSummary?: string

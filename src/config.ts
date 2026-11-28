@@ -43,6 +43,8 @@ export type HarnessOptions = {
   patience: number
   /** Animate the winning image at the end (slow and costs more). */
   video: boolean
+  /** With video on: how many finalists get a cheap motion clip before the showdown, so the winner is chosen on motion. 0 or 1 turns it off. */
+  motionTest: number
   /** How many clips to render at most: each one is checked, and a flagged clip is retried with a revised motion prompt. */
   videoAttempts: number
   /** Round-robin judges every pair (n(n-1)/2 matches); Swiss plays log2(n) rounds (about n log n / 2 matches). */
@@ -60,6 +62,7 @@ export const defaultOptions: HarnessOptions = {
   patience: 1,
   video: false,
   videoAttempts: 2,
+  motionTest: 2,
   tournament: 'auto',
   roundRobinMax: 8,
 }
@@ -75,12 +78,14 @@ export function sanitiseOptions(o: Partial<Record<keyof HarnessOptions, unknown>
   const patience = int(o.patience, 0, 3)
   const roundRobinMax = int(o.roundRobinMax, 2, 16)
   const videoAttempts = int(o.videoAttempts, 1, 4)
+  const motionTest = int(o.motionTest, 0, 6)
   if (concepts !== undefined) out.concepts = concepts
   if (finalists !== undefined) out.finalists = finalists
   if (maxIters !== undefined) out.maxIters = maxIters
   if (patience !== undefined) out.patience = patience
   if (roundRobinMax !== undefined) out.roundRobinMax = roundRobinMax
   if (videoAttempts !== undefined) out.videoAttempts = videoAttempts
+  if (motionTest !== undefined) out.motionTest = motionTest
   if (typeof o.video === 'boolean') out.video = o.video
   if (TOURNAMENT_FORMATS.includes(o.tournament as TournamentFormat)) out.tournament = o.tournament as TournamentFormat
   return out
