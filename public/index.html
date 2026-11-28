@@ -97,6 +97,7 @@
       <option value="auto">Auto (round-robin up to 8)</option><option value="round-robin">Round-robin</option><option value="swiss">Swiss</option>
     </select></div>
     <div class="row"><label>Animate winner (video)</label><input id="video" type="checkbox" style="width:auto" /></div>
+    <div class="row"><label>Motion-test finalists</label><input id="motionTest" type="number" min="0" max="6" /></div>
     <div class="row"><label>Video attempts <span id="ffmpeg" class="muted"></span></label><input id="videoAttempts" type="number" min="1" max="4" /></div>
     <button id="go">Run harness</button>
     <h2 style="margin-top:12px">Runs</h2>
@@ -119,6 +120,7 @@ async function boot() {
   $('iters').value = health.defaults.maxIters
   $('video').checked = health.defaults.video
   $('videoAttempts').value = health.defaults.videoAttempts
+  $('motionTest').value = health.defaults.motionTest
   if (!health.mock && !health.ffmpeg) $('ffmpeg').textContent = '(no ffmpeg: clips will not be checked)'
   $('tournament').value = health.defaults.tournament
   $('tournament').options[0].textContent = `Auto (round-robin up to ${health.defaults.roundRobinMax})`
@@ -135,7 +137,7 @@ async function start() {
   if (!brief) return $('brief').focus()
   $('go').disabled = true
   const res = await fetch('/api/runs', { method:'POST', headers:{ 'content-type':'application/json' }, body: JSON.stringify({ brief, options: {
-    concepts: +$('concepts').value, finalists: +$('finalists').value, maxIters: +$('iters').value, video: $('video').checked, videoAttempts: +$('videoAttempts').value, tournament: $('tournament').value } }) }).then((r) => r.json())
+    concepts: +$('concepts').value, finalists: +$('finalists').value, maxIters: +$('iters').value, video: $('video').checked, videoAttempts: +$('videoAttempts').value, motionTest: +$('motionTest').value, tournament: $('tournament').value } }) }).then((r) => r.json())
   $('go').disabled = false
   if (res.id) open(res.id)
 }
@@ -202,9 +204,9 @@ function spark(check) {
     <div class="row muted"><span>0s · first second shaded</span><span style="margin-left:auto">${s.duration}s</span></div>`
 }
 
-function videoCheck(v, kept) {
+function videoCheck(v, kept, title) {
   const c = v.videoCheck
-  const head = `<div class="lane-head"><b>Attempt ${v.version}</b><span>${kept ? 'kept · ' : ''}${esc(v.endpoint)}</span></div>`
+  const head = `<div class="lane-head"><b>${title ? esc(title) : `Attempt ${v.version}`}</b><span>${kept ? (title ? 'chosen · ' : 'kept · ') : ''}${esc(v.endpoint)}</span></div>`
   const prompt = `${v.changeSummary ? `<div class="muted">↻ ${esc(v.changeSummary)}</div>` : ''}<div class="muted">motion prompt: ${esc(v.prompt)}</div>`
   if (!c) return `<div class="vcheck"><div class="vmedia">${media(v)}</div><div class="vbody">${head}${prompt}<div class="muted">checking…</div></div></div>`
   const s = c.signals
@@ -251,9 +253,13 @@ function render(run) {
     </div></section>`
   }
 
-  const videos = run.renders.filter((r) => r.kind === 'video')
+  const videos = run.renders.filter((r) => r.kind === 'video' && r.stage !== 'motion-test')
   if (videos.length) {
     html += '<section><h2>Video check: every frame measured, then a closer look where it changed</h2>' + videos.map((v) => videoCheck(v, v.id === run.final?.video?.id)).join('') + '</section>'
+  }
+  const tests = run.renders.filter((r) => r.stage === 'motion-test')
+  if (tests.length) {
+    html += '<section><h2>Motion test: a cheap clip of each top finalist, checked before the choice</h2>' + tests.map((v) => videoCheck(v, v.conceptId === run.final?.conceptId, `Motion test · ${byId[v.conceptId]?.title ?? v.conceptId}`)).join('') + '</section>'
   }
 
   const finalists = run.concepts.filter((c) => c.status === 'finalist' || c.status === 'winner')

@@ -76,6 +76,7 @@ if (args.includes('--video') || args.includes('--all')) {
       return `~$${r.estUsd.toFixed(4)} ${r.url}`
     })
   }
+  if (imageUrl) await media(SPECS.h3TurboI2VDraft, { imageUrl, seconds: 3 })
   // The whole verifier path against your account: download, ffmpeg, frame upload, and vision calls on those frames.
   if (videoUrl) {
     await step('video verifier (ffmpeg, frame upload, vision)', async () => {

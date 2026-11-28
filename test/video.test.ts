@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { defaultOptions, sanitiseOptions } from '../src/config.ts'
 import { runHarness } from '../src/harness/loop.ts'
 import { assessVideo, betterVideo, verifyVideo, videoScore } from '../src/harness/verifier.ts'
+import { compareImagePrompt, motionNote } from '../src/prompts.ts'
 import { Run } from '../src/trace.ts'
 import type { Inspection, VideoCheck } from '../src/types.ts'
 import { ffmpegAvailable, mockClip, type MockScenario, mockScenarioFor, openClip } from '../src/video/clip.ts'
@@ -447,5 +448,81 @@ describe.skipIf(!ffmpegAvailable())('ffmpeg: a real clip, and known faults injec
     expect(c.signals!.frozen).toBe(true)
     expect(c.flags[0]!.flag).toBe('Frozen')
     expect(c.verdict).toBe('retry')
+  })
+})
+
+describe('motion test before the showdown (mock)', () => {
+  const run3 = async (opts: Partial<typeof defaultOptions> = {}) => {
+    const run = new Run('A test brief', defaultOptions)
+    await runHarness(run, { ...defaultOptions, concepts: 4, finalists: 3, maxIters: 0, video: true, ...opts })
+    return run.state
+  }
+  const tests = (s: Run['state']) => s.renders.filter((r) => r.stage === 'motion-test')
+  const showdown = (s: Run['state']) => s.matches.filter((m) => m.round.startsWith('Showdown'))
+  afterEach(() => delete process.env.MOCK_MOTION)
+
+  test('the top finalists get a cheap clip; one that starts dead leaves, and the winner is chosen on motion', async () => {
+    const s = await run3()
+    const clips = tests(s)
+    expect(clips).toHaveLength(2)
+    expect(clips.every((c) => c.kind === 'video' && c.videoCheck)).toBe(true)
+    expect(s.events.some((e) => e.message.includes('sit out'))).toBe(true)
+    // Default mock: the top finalist's clip starts dead, the second's is clean.
+    const dead = clips.find((c) => c.videoCheck!.verdict === 'retry')!
+    const clean = clips.find((c) => c.videoCheck!.verdict === 'pass')!
+    expect(dead.videoCheck!.flags[0]!.flag).toBe('Dead first second')
+    expect(s.final!.conceptId).toBe(clean.conceptId)
+    expect(s.final!.reason).toContain('motion test passed')
+    expect(showdown(s)).toHaveLength(0)
+    // The full video is still made, from the winner's hero image.
+    expect(s.final!.video!.stage).toBeUndefined()
+    expect(s.final!.video!.conceptId).toBe(clean.conceptId)
+  })
+
+  test('when both clips pass, the showdown judges them with the motion evidence', async () => {
+    process.env.MOCK_MOTION = 'ok,ok'
+    const s = await run3()
+    expect(tests(s)).toHaveLength(2)
+    expect(showdown(s)).toHaveLength(1)
+    expect(s.events.some((e) => e.message.startsWith('Through on motion'))).toBe(true)
+  })
+
+  test('when every clip is flagged, all tested finalists stay in and the judge sees the faults', async () => {
+    process.env.MOCK_MOTION = 'slow,frozen'
+    const s = await run3()
+    expect(s.events.filter((e) => e.message.includes('every clip was flagged'))).toHaveLength(2)
+    expect(showdown(s)).toHaveLength(1)
+    expect(s.status).toBe('done')
+  })
+
+  test('if no clip can be made, the choice falls back to the stills of every finalist', async () => {
+    process.env.MOCK_FAIL = '^media\\.video$'
+    const s = await run3()
+    expect(tests(s)).toHaveLength(0)
+    expect(s.events.some((e) => e.message.includes('choosing on the stills'))).toBe(true)
+    expect(showdown(s)).toHaveLength(3)
+    expect(s.status).toBe('done')
+  })
+
+  test('off with motionTest 0, with video off, or with one finalist', async () => {
+    const off = await run3({ motionTest: 0 })
+    expect(tests(off)).toHaveLength(0)
+    expect(showdown(off)).toHaveLength(3)
+    expect(tests(await run3({ video: false }))).toHaveLength(0)
+    expect(tests(await run3({ finalists: 1 }))).toHaveLength(0)
+    expect(sanitiseOptions({ motionTest: 99 })).toEqual({ motionTest: 6 })
+  })
+
+  test('the judge prompt carries each option\'s motion evidence, and nothing when there is none', async () => {
+    const check = await verifyVideo({ concept, source: 'mock', label: 'x', clip: mockClip('slow') })
+    const note = motionNote(check)!
+    expect(note).toContain('first second: nothing starts')
+    expect(note).toContain('Dead first second')
+    expect(motionNote(undefined)).toBeUndefined()
+    const c = { ...concept, id: 'c1', status: 'finalist' as const, axis: 'x', medium: 'image' as const, visualPrompt: 'p', whyItWorks: 'w' }
+    const withMotion = compareImagePrompt('brief', c, { ...c, id: 'c2' }, note, undefined)
+    expect(withMotion).toContain(`OPTION A MOTION TEST: ${note}`)
+    expect(withMotion).toContain('OPTION B MOTION TEST: not run')
+    expect(compareImagePrompt('brief', c, { ...c, id: 'c2' })).not.toContain('MOTION TEST')
   })
 })

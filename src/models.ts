@@ -77,6 +77,20 @@ export const SPECS = {
     pick: (d) => d?.video?.url,
     estUsd: (p) => 0.04 * (p.seconds ?? 5),
   },
+  /** Same model at 480P and 3s, for cheap motion tests of finalists before the final choice. $0.025/s at 480P (standard rate from 16 Nov 2026). */
+  h3TurboI2VDraft: {
+    endpoint: 'minimax/h3-max-turbo/image-to-video',
+    kind: 'video',
+    build: (p) => ({
+      prompt: p.prompt,
+      image_url: p.imageUrl,
+      duration: p.seconds ?? 3,
+      resolution: '480P', // uppercase P is required
+      prompt_expansion_mode: 'balanced',
+    }),
+    pick: (d) => d?.video?.url,
+    estUsd: (p) => 0.025 * (p.seconds ?? 3),
+  },
   /** Kling v4 i2v: high quality, $0.157/s at 720p. Note: no fal-ai/ prefix, field is start_image_url. */
   klingV4I2V: {
     endpoint: 'kling/v4/image-to-video',
@@ -112,9 +126,10 @@ export const SPECS = {
 } satisfies Record<string, MediaSpec>
 
 /** Which model does which job. Change these lines to change the pipeline. */
-export const ROLES: { draft: MediaSpec; final: MediaSpec; edit: MediaSpec; video: MediaSpec } = {
+export const ROLES: { draft: MediaSpec; final: MediaSpec; edit: MediaSpec; video: MediaSpec; motionTest: MediaSpec } = {
   draft: SPECS.fluxSchnell,
   final: SPECS.nanoBanana,
   edit: SPECS.nanoBananaEdit,
   video: SPECS.h3TurboI2V,
+  motionTest: SPECS.h3TurboI2VDraft,
 }

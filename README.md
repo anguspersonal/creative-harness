@@ -33,13 +33,16 @@ brief
   │              cheap draft render → vision critic scores it against rubric.md → reviser
   │              repeats until the critic says ship, the score stops rising, or rounds run out
   ▼
-4. showdown    vision judge compares the finalists' best renders head to head
+4. motion      video runs only: a cheap 3s clip of each of the top 2 finalists, checked by the
+  │            video verifier. A finalist whose clip is flagged leaves the showdown.
+  ▼
+5. showdown    vision judge compares the finalists' best renders head to head, with each one's
+  │            motion-test result in the prompt
+  ▼
+6. final       hero render on a stronger model
   │
   ▼
-5. final       hero render on a stronger model
-  │
-  ▼
-6. animate     optional 5s image-to-video. Every frame of the clip is measured in code, a vision
+7. animate     optional 5s image-to-video. Every frame of the clip is measured in code, a vision
                model is shown the moments where the pixels changed most, and a flagged clip is
                re-rendered with a revised motion prompt.
 ```
@@ -229,6 +232,8 @@ Measurements cost nothing, do not drift between runs, and need no key. A frozen 
 
 The motion criteria live in [rubric.video.md](rubric.video.md), separate from the still rubric.
 
+**Choose on motion, not just the still.** With video on, the top 2 finalists by critic score are each animated as a 3-second 480P clip (about 7.5 cents each at fal's list price) and verified before the showdown. A finalist whose clip is flagged leaves the showdown; if every clip is flagged, all stay in and the judge sees the faults. The showdown judge gets each option's motion result (first second, what happens, motion score, faults) and is told to weigh motion as heavily as the still. Only the winner gets the full 5-second clip. `motionTest` (default 2, `--motion-test N`, 0 to turn off) sets how many finalists are tested. This has only run in mock mode so far.
+
 **Tested by injecting known faults.** I had no labelled set of bad AI clips, so `bun run verify-video <clip> --inject all` puts six known faults into a real clip with ffmpeg and reports which are caught. On four public sample clips from fal's model pages (Veo 3.1, Kling 2.1, Wan 2.2, Hailuo 02):
 
 | Injected fault | Caught by the measurements |
@@ -284,7 +289,7 @@ bun run smoke --parallel 6
 | Command | What it does |
 |---|---|
 | `bun run start` | Server without file watching (use this for live demos) |
-| `bun run harness briefs/example-coffee.md` | Run from the terminal. Flags: `--video`, `--video-attempts N`, `--concepts N`, `--finalists K`, `--iters N` |
+| `bun run harness briefs/example-coffee.md` | Run from the terminal. Flags: `--video`, `--motion-test N`, `--video-attempts N`, `--concepts N`, `--finalists K`, `--iters N` |
 | `bun run check` | Typecheck and tests (always mock, never spends) |
 | `bun run smoke --video` / `--all` | Also test the video model and the video verifier / every model |
 | `bun run verify-video clip.mp4` | Measure every frame of any clip, file or URL. No key, no cost |
@@ -320,7 +325,7 @@ LLM calls go through fal's OpenRouter router, so one `FAL_KEY` covers image, vid
 
 ## Cost and speed
 
-Measured over seven live runs with defaults (8 concepts, 3 finalists, up to 3 revisions each): **159 to 280 seconds, $0.30 to $0.39, 50 to 64 calls**. Most of the time goes on LLM calls at concurrency 2. Video adds about $0.20 per 5-second clip plus up to six vision calls to check it, and a flagged clip is rendered again (two attempts by default). Those video figures are estimates from fal's prices, not measured. The spend counter uses fal's reported LLM cost plus per-model estimates, so treat it as a guide.
+Measured over seven live runs with defaults (8 concepts, 3 finalists, up to 3 revisions each): **159 to 280 seconds, $0.30 to $0.39, 50 to 64 calls**. Most of the time goes on LLM calls at concurrency 2. Video adds two cheap motion tests (about $0.15 plus their checks), then about $0.20 per 5-second final clip plus up to six vision calls to check it, and a flagged final clip is rendered again (two attempts by default). Those video figures are estimates from fal's prices, not measured. The spend counter uses fal's reported LLM cost plus per-model estimates, so treat it as a guide.
 
 ## Ideas not built yet
 

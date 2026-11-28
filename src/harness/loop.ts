@@ -1,23 +1,24 @@
 import { config, type HarnessOptions, defaultOptions } from '../config.ts'
 import { generateMedia } from '../media.ts'
 import { ROLES } from '../models.ts'
-import { type FailedAttempt, type FailedMotion, heroPrompt, motionPrompt } from '../prompts.ts'
+import { type FailedAttempt, type FailedMotion, heroPrompt, motionNote, motionPrompt } from '../prompts.ts'
 import { Run } from '../trace.ts'
-import type { Concept, Critique, Render } from '../types.ts'
+import type { Concept, Critique, Render, VideoCheck } from '../types.ts'
 import { critique, effectiveScore, revise } from './critic.ts'
 import { diverge } from './director.ts'
 import { tournament } from './selector.ts'
 import { betterVideo, describeVerdict, reviseMotion, verifyVideo } from './verifier.ts'
 import { stripStock } from '../util/stock.ts'
-import { mockClip, mockScenarioFor } from '../video/clip.ts'
+import { mockClip, mockMotionScenarioFor, mockScenarioFor } from '../video/clip.ts'
 
 // The harness:
 //   1. diverge   - director writes N concepts on different axes
 //   2. select    - text-only tournament picks K finalists (cheap: no renders yet)
 //   3. develop   - each finalist: draft render -> critic -> reviser, until ship / plateau / max
-//   4. showdown  - vision judge compares the finalists' best renders head to head
-//   5. final     - re-render the winner on the hero model
-//   6. animate   - optional: image-to-video, checked by the video verifier and retried when it finds a fault
+//   4. motion    - video runs only: a cheap clip of each top finalist, verified, BEFORE the choice
+//   5. showdown  - vision judge compares the finalists' best renders head to head, with the motion evidence
+//   6. final     - re-render the winner on the hero model
+//   7. animate   - optional: image-to-video, checked by the video verifier and retried when it finds a fault
 //
 // Failure policy: once money has been spent on renders, a single failed call
 // degrades the run (logged as an error event) instead of ending it.
@@ -70,22 +71,28 @@ export async function runHarness(run: Run, o: HarnessOptions): Promise<void> {
   for (const d of developed) if (d.killed && !bests.includes(d)) d.concept.status = 'eliminated'
   if (bests.length === 0) throw new Error('No finalist produced a render')
 
-  // 4. Showdown on the actual images. If judging fails, fall back to critic scores.
+  // 4. Motion test (video runs only): animate the best finalists cheaply BEFORE choosing, so the winner is
+  // picked on how it moves. A finalist whose clip fails the verifier leaves the showdown, unless all fail.
   const rank = (d: Developed) => (d.render.critique ? effectiveScore(d.render.critique) : -Infinity)
-  const byScore = [...bests].sort((x, y) => rank(y) - rank(x))
+  const motion = new Map<string, VideoCheck>()
+  let contenders = bests
+  if (o.video && o.motionTest >= 2 && bests.length >= 2) contenders = await motionTest(run, bests, o.motionTest, rank, motion)
+
+  // 5. Showdown on the actual images (plus motion evidence when there is any). If judging fails, fall back to critic scores.
+  const byScore = [...contenders].sort((x, y) => rank(y) - rank(x))
   let winner = byScore[0]!
-  let reason = bests.length === 1 ? 'Only finalist standing.' : 'Highest critic score.'
-  if (bests.length > 1) {
+  let reason = contenders.length === 1 ? (contenders.length < bests.length ? 'Only finalist whose motion test passed.' : 'Only finalist standing.') : 'Highest critic score.'
+  if (contenders.length > 1) {
     try {
       const { ranked: final, matches } = await tournament(
         brief,
-        bests.map((b) => ({ concept: b.concept, imageUrl: b.render.url })),
+        contenders.map((b) => ({ concept: b.concept, imageUrl: b.render.url, note: motionNote(motion.get(b.concept.id)) })),
         'Showdown',
         run,
         format,
       )
       if (matches.length > 0) {
-        winner = bests.find((b) => b.concept.id === final[0]!.concept.id)!
+        winner = contenders.find((b) => b.concept.id === final[0]!.concept.id)!
         reason = matches.filter((m) => m.winner === winner.concept.id).at(-1)?.reason ?? reason
       }
     } catch (err) {
@@ -95,7 +102,7 @@ export async function runHarness(run: Run, o: HarnessOptions): Promise<void> {
   winner.concept.status = 'winner'
   run.emit('showdown', `Winner: ${winner.concept.id} "${winner.concept.title}" (${winner.render.critique ? scoreText(winner.render.critique) : '?'}). ${reason}`)
 
-  // 5. Final hero render. Show it as soon as it exists; critique and video are extras.
+  // 6. Final hero render. Show it as soon as it exists; critique and video are extras.
   run.state.final = { conceptId: winner.concept.id, image: winner.render, reason }
   try {
     const heroMedia = await generateMedia(ROLES.final, { prompt: heroPrompt(winner.render.prompt) }, run)
@@ -117,6 +124,49 @@ export async function runHarness(run: Run, o: HarnessOptions): Promise<void> {
 
   run.emit('done', `Done in ${Math.round((Date.now() - run.state.startedAt) / 1000)}s, ~$${run.state.spend.usd.toFixed(3)} across ${run.state.spend.calls} calls`)
   run.finish('done')
+}
+
+/**
+ * Animate each of the top `count` finalists (by critic score) as a short, cheap clip and run the verifier on it.
+ * Returns who goes on to the showdown: the finalists whose clip was not flagged. If every clip was flagged, all
+ * tested finalists go on (the judge sees the faults); if no clip could be made at all, nothing changes.
+ */
+async function motionTest(run: Run, bests: Developed[], count: number, rank: (d: Developed) => number, results: Map<string, VideoCheck>): Promise<Developed[]> {
+  const ordered = [...bests].sort((x, y) => rank(y) - rank(x))
+  const tested = ordered.slice(0, count)
+  const sitOut = ordered.slice(count)
+  run.emit('showdown', `Motion test: a cheap clip of each of the top ${tested.length} by critic score${sitOut.length ? `; ${sitOut.map((d) => d.concept.id).join(', ')} sit out` : ''}`)
+
+  await Promise.all(
+    tested.map(async (d, i) => {
+      const prompt = motionPrompt(d.concept)
+      try {
+        const media = await generateMedia(ROLES.motionTest, { prompt, imageUrl: d.render.url, seconds: 3 }, run)
+        const clip: Render = { ...media, id: `${d.concept.id}-motion`, conceptId: d.concept.id, version: d.render.version, prompt, stage: 'motion-test' }
+        run.state.renders.push(clip)
+        run.emit('showdown', `${clip.id}: motion test of ${d.render.id} on ${clip.endpoint}`, { renderId: clip.id })
+        // Mock renders are placeholders, so the verifier gets a synthetic clip with a known fault instead.
+        const mock = config.mock ? mockClip(mockMotionScenarioFor(i), 3) : undefined
+        clip.videoCheck = await verifyVideo({ concept: d.concept, source: clip.url, label: clip.id, clip: mock }, run)
+        results.set(d.concept.id, clip.videoCheck)
+      } catch (err) {
+        run.emit('error', `${d.concept.id} motion test failed (it stays in the showdown): ${String(err).slice(0, 200)}`)
+      }
+    }),
+  )
+
+  if (results.size === 0) {
+    run.emit('showdown', 'No motion test produced a clip; choosing on the stills as before')
+    return bests
+  }
+  const flagged = tested.filter((d) => results.get(d.concept.id)?.verdict === 'retry')
+  const through = tested.filter((d) => !flagged.includes(d))
+  for (const d of flagged) {
+    const c = results.get(d.concept.id)!
+    run.emit('showdown', `${d.concept.id} ${through.length ? 'leaves the showdown' : 'stays in (every clip was flagged)'}: ${c.flags.map((f) => f.flag).join('; ')}`)
+  }
+  if (through.length) run.emit('showdown', `Through on motion: ${through.map((d) => d.concept.id).join(', ')}`)
+  return through.length ? through : tested
 }
 
 /**

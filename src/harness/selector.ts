@@ -8,7 +8,8 @@ import { type Compare, CompareSchema, type Concept, type Match } from '../types.
 // "which of these two" than at calibrated numbers. Each match is judged twice with
 // A and B swapped; if the verdict flips, the judge was reacting to order, not content.
 
-export type Contender = { concept: Concept; imageUrl?: string }
+/** `note` is extra evidence shown to the image judge with this option (the motion test result). */
+export type Contender = { concept: Concept; imageUrl?: string; note?: string }
 type Judged = Match & { confidence: number }
 
 export async function judgePair(brief: string, a: Contender, b: Contender, round: string, run?: Run): Promise<Judged> {
@@ -18,7 +19,7 @@ export async function judgePair(brief: string, a: Contender, b: Contender, round
       {
         task: 'selector.compare',
         system: JUDGE_SYSTEM,
-        prompt: images ? compareImagePrompt(brief, x.concept, y.concept) : compareTextPrompt(brief, x.concept, y.concept),
+        prompt: images ? compareImagePrompt(brief, x.concept, y.concept, x.note, y.note) : compareTextPrompt(brief, x.concept, y.concept),
         imageUrls: images,
         temperature: 0.2,
         maxTokens: 400,
