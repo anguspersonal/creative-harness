@@ -1,20 +1,23 @@
-import { type HarnessOptions, defaultOptions } from '../config.ts'
+import { config, type HarnessOptions, defaultOptions } from '../config.ts'
 import { generateMedia } from '../media.ts'
 import { ROLES } from '../models.ts'
-import { type FailedAttempt, heroPrompt, motionPrompt } from '../prompts.ts'
+import { type FailedAttempt, type FailedMotion, heroPrompt, motionPrompt } from '../prompts.ts'
 import { Run } from '../trace.ts'
 import type { Concept, Critique, Render } from '../types.ts'
 import { critique, effectiveScore, revise } from './critic.ts'
 import { diverge } from './director.ts'
 import { tournament } from './selector.ts'
+import { betterVideo, describeVerdict, reviseMotion, verifyVideo } from './verifier.ts'
 import { stripStock } from '../util/stock.ts'
+import { mockClip, mockScenarioFor } from '../video/clip.ts'
 
 // The harness:
 //   1. diverge   - director writes N concepts on different axes
 //   2. select    - text-only tournament picks K finalists (cheap: no renders yet)
 //   3. develop   - each finalist: draft render -> critic -> reviser, until ship / plateau / max
 //   4. showdown  - vision judge compares the finalists' best renders head to head
-//   5. final     - re-render the winner on the hero model, optionally animate it
+//   5. final     - re-render the winner on the hero model
+//   6. animate   - optional: image-to-video, checked by the video verifier and retried when it finds a fault
 //
 // Failure policy: once money has been spent on renders, a single failed call
 // degrades the run (logged as an error event) instead of ending it.
@@ -41,7 +44,8 @@ export async function runHarness(run: Run, o: HarnessOptions): Promise<void> {
   run.emit('diverge', `${concepts.length} concepts across axes: ${concepts.map((c) => c.axis).join(', ')}`)
 
   // 2. Select
-  const { ranked } = await tournament(brief, concepts.map((concept) => ({ concept })), 'Concepts', run)
+  const format = { format: o.tournament, roundRobinMax: o.roundRobinMax }
+  const { ranked } = await tournament(brief, concepts.map((concept) => ({ concept })), 'Concepts', run, format)
   const finalists = ranked.slice(0, o.finalists).map((c) => c.concept)
   for (const c of concepts) c.status = finalists.includes(c) ? 'finalist' : 'eliminated'
   run.emit('select', `Finalists: ${finalists.map((c) => `${c.id} "${c.title}"`).join(', ')}`)
@@ -78,6 +82,7 @@ export async function runHarness(run: Run, o: HarnessOptions): Promise<void> {
         bests.map((b) => ({ concept: b.concept, imageUrl: b.render.url })),
         'Showdown',
         run,
+        format,
       )
       if (matches.length > 0) {
         winner = bests.find((b) => b.concept.id === final[0]!.concept.id)!
@@ -108,21 +113,58 @@ export async function runHarness(run: Run, o: HarnessOptions): Promise<void> {
     run.emit('error', `Hero render failed, keeping the best draft: ${String(err).slice(0, 200)}`)
   }
 
-  if (o.video) {
-    const still = run.state.final.image!
-    try {
-      const vidMedia = await generateMedia(ROLES.video, { prompt: motionPrompt(winner.concept), imageUrl: still.url, seconds: 5 }, run)
-      const video: Render = { ...vidMedia, id: `${winner.concept.id}-video`, conceptId: winner.concept.id, version: still.version, prompt: motionPrompt(winner.concept) }
-      run.state.renders.push(video)
-      run.state.final.video = video
-      run.emit('final', `Video on ${video.endpoint} (${Math.round(video.ms / 1000)}s)`, { renderId: video.id })
-    } catch (err) {
-      run.emit('error', `Video failed (image kept): ${String(err).slice(0, 200)}`)
-    }
-  }
+  if (o.video) await animate(run, winner.concept, run.state.final.image!, o)
 
   run.emit('done', `Done in ${Math.round((Date.now() - run.state.startedAt) / 1000)}s, ~$${run.state.spend.usd.toFixed(3)} across ${run.state.spend.calls} calls`)
   run.finish('done')
+}
+
+/**
+ * Animate the still, check the clip, and when the check finds a fault, revise the motion prompt and try again.
+ * Every attempt is kept in the trace with what was found; the best one becomes the final video.
+ * A failed render or revision ends the attempts and keeps the best clip so far (or just the image).
+ */
+async function animate(run: Run, concept: Concept, still: Render, o: HarnessOptions): Promise<void> {
+  let prompt = motionPrompt(concept)
+  let changeSummary: string | undefined
+  let best: Render | undefined
+  const tried: FailedMotion[] = []
+
+  for (let attempt = 1; attempt <= o.videoAttempts; attempt++) {
+    try {
+      const media = await generateMedia(ROLES.video, { prompt, imageUrl: still.url, seconds: 5 }, run)
+      const video: Render = { ...media, id: `${concept.id}-video${attempt}`, conceptId: concept.id, version: attempt, prompt, changeSummary }
+      run.state.renders.push(video)
+      run.emit('final', `${video.id} on ${video.endpoint} (${Math.round(video.ms / 1000)}s)`, { renderId: video.id })
+
+      // Mock renders are placeholders, so the verifier is given a synthetic clip with a known fault instead.
+      const clip = config.mock ? mockClip(mockScenarioFor(attempt)) : undefined
+      const check = await verifyVideo({ concept, source: video.url, label: video.id, clip }, run)
+      video.videoCheck = check
+      if (!best || betterVideo(check, best.videoCheck!)) best = video
+      run.state.final!.video = best
+
+      if (check.verdict !== 'retry') break
+      if (attempt === o.videoAttempts) {
+        run.emit('verify', `${concept.id}: no video attempts left`)
+        break
+      }
+      try {
+        const rev = await reviseMotion(concept, prompt, check, tried, run)
+        tried.push({ prompt, flags: check.flags.map((f) => f.flag) })
+        prompt = rev.motionPrompt
+        changeSummary = rev.changeSummary
+        run.emit('revise', `${concept.id} video attempt ${attempt + 1}: ${rev.changeSummary}`)
+      } catch (err) {
+        run.emit('error', `Motion prompt could not be revised (keeping ${best.id}): ${String(err).slice(0, 200)}`)
+        break
+      }
+    } catch (err) {
+      run.emit('error', `Video attempt ${attempt} failed (${best ? `keeping ${best.id}` : 'image kept'}): ${String(err).slice(0, 200)}`)
+      break
+    }
+  }
+  if (best) run.emit('final', `Final video: ${best.id}, ${describeVerdict(best.videoCheck!)}`, { renderId: best.id })
 }
 
 /**

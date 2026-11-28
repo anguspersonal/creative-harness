@@ -15,6 +15,9 @@ export async function generateMedia(spec: MediaSpec, params: MediaParams, run?: 
 
   if (config.mock) {
     await Bun.sleep(150)
+    // MOCK_FAIL (see mock.ts) also matches renders, as "media.<kind>", to rehearse a failed render.
+    const fail = process.env.MOCK_FAIL
+    if (fail && new RegExp(fail).test(`media.${spec.kind}`)) throw new Error(`mock failure for media.${spec.kind}`)
     return { url: placeholder(`${spec.kind}: ${params.prompt}`), endpoint: `mock:${spec.endpoint}`, ms: 150, estUsd: 0, kind: spec.kind }
   }
 

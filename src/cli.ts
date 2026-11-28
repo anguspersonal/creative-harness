@@ -1,14 +1,17 @@
 import { readFileSync } from 'node:fs'
-import { config, defaultOptions, sanitiseOptions } from './config.ts'
+import { config, defaultOptions, sanitiseOptions, TOURNAMENT_FORMATS, type TournamentFormat } from './config.ts'
 import { runHarness } from './harness/loop.ts'
 import { Run } from './trace.ts'
+import { ffmpegAvailable } from './video/clip.ts'
 
 // bun run harness "your brief"            run on a brief string
 // bun run harness briefs/example.md       run on a brief file
 // bun run harness briefs/example.md --video --concepts 6 --finalists 2 --iters 2
+// bun run harness briefs/example.md --tournament swiss        (auto | round-robin | swiss)
+// bun run harness briefs/example.md --video --video-attempts 3   (each clip is checked; a flagged one is retried)
 
-const USAGE = 'Usage: bun run harness "<brief>" | <brief-file> [--video] [--concepts N] [--finalists K] [--iters N] [--patience N]'
-const NUMERIC = { concepts: 'concepts', finalists: 'finalists', iters: 'maxIters', patience: 'patience' } as const
+const USAGE = 'Usage: bun run harness "<brief>" | <brief-file> [--video] [--concepts N] [--finalists K] [--iters N] [--patience N] [--video-attempts N] [--tournament auto|round-robin|swiss] [--round-robin-max N]'
+const NUMERIC = { concepts: 'concepts', finalists: 'finalists', iters: 'maxIters', patience: 'patience', 'round-robin-max': 'roundRobinMax', 'video-attempts': 'videoAttempts' } as const
 
 const opts: Record<string, unknown> = { video: false }
 const positional: string[] = []
@@ -23,6 +26,12 @@ for (let i = 0; i < argv.length; i++) {
   const [name, inline] = arg.slice(2).split('=', 2) as [string, string | undefined]
   if (name === 'video') {
     opts.video = true
+    continue
+  }
+  if (name === 'tournament') {
+    const raw = inline ?? argv[++i]
+    if (!TOURNAMENT_FORMATS.includes(raw as TournamentFormat)) fail(`--tournament must be one of ${TOURNAMENT_FORMATS.join(', ')}, got ${JSON.stringify(raw)}`)
+    opts.tournament = raw
     continue
   }
   if (name in NUMERIC) {
@@ -47,6 +56,8 @@ try {
 
 const options = { ...defaultOptions, ...sanitiseOptions(opts) }
 console.log(`mode: ${config.mock ? 'MOCK (no network)' : 'live fal'}, concurrency ${config.concurrency}, ${JSON.stringify(options)}`)
+
+if (options.video && !config.mock && !ffmpegAvailable()) console.log('warning: ffmpeg not found, so the video will be rendered but not checked. Install ffmpeg or set FFMPEG_PATH.')
 
 const run = new Run(brief.trim(), options)
 try {

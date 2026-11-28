@@ -8,6 +8,7 @@
     "smoke": "bun scripts/smoke.ts",
     "compare": "bun scripts/compare.ts",
     "recritique": "bun scripts/recritique.ts",
+    "verify-video": "bun scripts/verify-video.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "check": "tsc --noEmit && bun test"

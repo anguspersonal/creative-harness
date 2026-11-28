@@ -1,3 +1,4 @@
+import { defaultOptions, type TournamentFormat } from '../config.ts'
 import { completeJson } from '../llm.ts'
 import { compareImagePrompt, compareTextPrompt, JUDGE_SYSTEM } from '../prompts.ts'
 import type { Run } from '../trace.ts'
@@ -55,14 +56,29 @@ export async function judgePair(brief: string, a: Contender, b: Contender, round
   }
 }
 
+export type TournamentSettings = { format?: TournamentFormat; roundRobinMax?: number }
+
+/** Resolve 'auto' for a field of n contenders. Fields of 3 or fewer always get round-robin: Swiss saves nothing there. */
+export function resolveFormat(n: number, { format = defaultOptions.tournament, roundRobinMax = defaultOptions.roundRobinMax }: TournamentSettings = {}): 'round-robin' | 'swiss' {
+  if (n <= 3) return 'round-robin'
+  if (format === 'auto') return n <= roundRobinMax ? 'round-robin' : 'swiss'
+  return format
+}
+
 /**
  * Rank a field by pairwise judgement.
- * - 3 or fewer: round-robin (at most 3 matches), so every pair is decided directly.
- * - Larger: Swiss rounds (n log n judgements instead of n squared). Odd fields give the
- *   bye to the lowest-ranked contender without one, scored as a win (standard Swiss).
- * Ties break on head-to-head result, then on judge confidence.
+ * - Round-robin: every pair is judged once (n(n-1)/2 matches), so every pair is decided directly.
+ * - Swiss: log2(n) rounds pairing neighbours in the standings (about n log n / 2 matches). Odd fields
+ *   give the bye to the lowest-ranked contender without one, scored as a win (standard Swiss).
+ * The format comes from `settings` (see resolveFormat). Ties break on head-to-head result, then on judge confidence.
  */
-export async function tournament(brief: string, field: Contender[], label: string, run?: Run): Promise<{ ranked: Contender[]; matches: Match[] }> {
+export async function tournament(
+  brief: string,
+  field: Contender[],
+  label: string,
+  run?: Run,
+  settings: TournamentSettings = {},
+): Promise<{ ranked: Contender[]; matches: Match[] }> {
   const wins = new Map<string, number>(field.map((c) => [c.concept.id, 0]))
   const conf = new Map<string, number>(field.map((c) => [c.concept.id, 0]))
   const h2h = new Map<string, string>()
@@ -88,15 +104,17 @@ export async function tournament(brief: string, field: Contender[], label: strin
     })
   }
 
-  if (field.length <= 3) {
+  const format = resolveFormat(field.length, settings)
+  if (format === 'round-robin') {
     const pairs: Array<[Contender, Contender]> = []
     for (let i = 0; i < field.length; i++) for (let j = i + 1; j < field.length; j++) pairs.push([field[i]!, field[j]!])
     if (pairs.length) {
-      run?.emit('select', `${label}: round-robin, ${pairs.length} matches`)
+      run?.emit('select', `${label}: round-robin over ${field.length}, ${pairs.length} matches`)
       await play(pairs, `${label} RR`)
     }
   } else {
     const rounds = Math.ceil(Math.log2(field.length))
+    run?.emit('select', `${label}: Swiss over ${field.length}, ${rounds} rounds`)
     for (let r = 1; r <= rounds; r++) {
       const order = [...field].sort((x, y) => wins.get(y.concept.id)! - wins.get(x.concept.id)!)
       let pool = order
@@ -113,15 +131,28 @@ export async function tournament(brief: string, field: Contender[], label: strin
     }
   }
 
-  const ranked = [...field].sort((x, y) => {
-    const dw = wins.get(y.concept.id)! - wins.get(x.concept.id)!
+  return { ranked: rankStandings(field, wins, conf, h2h), matches }
+}
+
+/**
+ * Order by wins. A two-way tie breaks on the head-to-head result; ties of three or more break on
+ * summed confidence, because head-to-head can be circular there (a beat b, b beat c, c beat a)
+ * and would leave the order to whatever order the field arrived in.
+ */
+export function rankStandings(field: Contender[], wins: Map<string, number>, conf: Map<string, number>, h2h: Map<string, string>): Contender[] {
+  const tied = new Map<number, number>()
+  for (const c of field) tied.set(wins.get(c.concept.id)!, (tied.get(wins.get(c.concept.id)!) ?? 0) + 1)
+  return [...field].sort((x, y) => {
+    const wx = wins.get(x.concept.id)!
+    const dw = wins.get(y.concept.id)! - wx
     if (dw) return dw
-    const direct = h2h.get(key(x.concept.id, y.concept.id))
-    if (direct === x.concept.id) return -1
-    if (direct === y.concept.id) return 1
+    if (tied.get(wx) === 2) {
+      const direct = h2h.get(key(x.concept.id, y.concept.id))
+      if (direct === x.concept.id) return -1
+      if (direct === y.concept.id) return 1
+    }
     return conf.get(y.concept.id)! - conf.get(x.concept.id)!
   })
-  return { ranked, matches }
 }
 
 /** Pair neighbours in the standings, avoiding rematches where possible. Pool must be even. */
@@ -138,6 +169,6 @@ function pairUp(order: Contender[], played: Map<string, string>): Array<[Contend
   return pairs
 }
 
-function key(a: string, b: string) {
+export function key(a: string, b: string) {
   return [a, b].sort().join('|')
 }

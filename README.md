@@ -1,6 +1,6 @@
 # creative harness
 
-An agent loop that turns a creative brief into finished content, and shows its working. It explores many ideas, picks between them with a bias-checked tournament, critiques its own renders against a written rubric, revises, and only then spends on a high-quality final.
+An agent loop that turns a creative brief into finished content, and shows its working. It explores many ideas, picks between them with a bias-checked tournament, critiques its own renders against a written rubric, revises, and only then spends on a high-quality final. If it animates the result, it measures every frame of the clip and renders it again when the motion is broken.
 
 Built in Bun and TypeScript on [fal](https://fal.ai), for **No Slop Allowed** (36 Labs x fal, London, 28 Nov 2026).
 
@@ -26,7 +26,7 @@ brief
 1. diverge     director LLM writes N concepts, each forced onto a different axis
   │            (emotional register, format, hook mechanism, point of view...)
   ▼
-2. select      Swiss tournament of pairwise judgements on the text alone.
+2. select      tournament of pairwise judgements on the text alone (round-robin up to 8, Swiss above).
   │            Every match is judged twice with A and B swapped, to catch position bias.
   ▼
 3. develop     for each of K finalists, in parallel:
@@ -36,7 +36,12 @@ brief
 4. showdown    vision judge compares the finalists' best renders head to head
   │
   ▼
-5. final       hero render on a stronger model (+ optional 5s image-to-video)
+5. final       hero render on a stronger model
+  │
+  ▼
+6. animate     optional 5s image-to-video. Every frame of the clip is measured in code, a vision
+               model is shown the moments where the pixels changed most, and a flagged clip is
+               re-rendered with a revised motion prompt.
 ```
 
 Every decision emits a trace event. The UI polls the run and shows rejected concepts, every match and its reason, each draft with its score, flagged slop and the fixes applied, and a running cost counter.
@@ -44,10 +49,11 @@ Every decision emits a trace event. The UI polls the run and shows rejected conc
 ## Design decisions
 
 **Choose with pairwise comparisons, not scores.** LLMs are poor at absolute scores ("7/10") and much better at "which of these two is better, and why". Selection is a tournament of comparisons:
-- **Swiss rounds** for large fields, so 8 concepts need 12 matches rather than 28.
-- **Round-robin** for 3 or fewer, so the final pick is always settled by a direct match.
+- **Round-robin** up to 8 contenders (the default `tournament: 'auto'`, threshold `roundRobinMax`), so every pair is decided directly. 8 concepts means 28 matches.
+- **Swiss rounds** above that, pairing neighbours in the standings for log2(n) rounds, so 16 concepts need 32 matches rather than 120.
+- **Configurable:** `--tournament auto|round-robin|swiss` and `--round-robin-max N` on the CLI, or the Tournament menu in the UI. Fields of 3 or fewer always get round-robin.
 - **Byes** go to the lowest-ranked contender that hasn't had one, so nobody goes unjudged.
-- **Ties** break on head-to-head, then on the judge's confidence.
+- **Ties** between two break on head-to-head. Ties of three or more break on the judge's summed confidence, because head-to-head can go in a circle (a beat b, b beat c, c beat a).
 
 **Check the judge for position bias.** Each match runs twice with the order swapped. If the two verdicts disagree, the match is marked order-biased in the UI and decided by confidence. Running both orders in parallel with `Promise.allSettled` means one failed call doesn't lose the match.
 
@@ -195,9 +201,57 @@ Its objection to the film hero changed from a literal mismatch to a viewer-level
 
 [scripts/recritique.ts](scripts/recritique.ts) re-scores any saved run with the current critic and rubric, so changes to taste can be checked on existing images before paying for new runs.
 
+## Checking video: measure what a model cannot see
+
+The still critic does not transfer to video, for two reasons.
+
+- **A vision model sees a video as a few stills a second.** Timing, stillness, and anything that lasts a frame or two are invisible to it. It cannot tell whether a clip starts moving at once or sits dead for a second, and that is most of what decides whether someone scrolls past.
+- **Generated video breaks in time, not in any one frame.** Things pop in, melt, drift into something else, or the shot jumps. Each frame can look fine on its own.
+
+So the verifier splits the job by who is good at what ([src/harness/verifier.ts](src/harness/verifier.ts)).
+
+**Code measures every frame** ([src/video/signals.ts](src/video/signals.ts)). ffmpeg decodes the whole clip into 48x48 greyscale thumbnails, and plain arithmetic on those gives:
+- **Frozen:** nothing changes from frame to frame.
+- **Dead first second:** the clip does not move until after the first second.
+- **Jumps:** the whole frame changes far more than the frames on both sides of it (a cut, a flash).
+- **Pops:** an area changes for one frame and changes back.
+- **The fastest movement,** in one area and across the frame.
+
+Measurements cost nothing, do not drift between runs, and need no key. A frozen clip is rejected without paying a model to look.
+
+**A vision model looks only where the measurements point.** It is never asked "is this video good?". It gets four narrow questions, each with frames chosen for it:
+- **First second:** five frames, a quarter of a second apart. Has an event started?
+- **Each sudden change and the fastest moments (up to three):** the frames either side, zoomed into the area that changed. Real movement, a cut, or a generation fault?
+- **Start to end:** first, middle and last frame. Is everything still itself?
+- **Whole clip:** eight frames. What happens, does anything in the scene move, is it the concept's moment, is anything impossible?
+
+**The verdict is decided in code,** as it is for stills. A measured dead start is flagged whatever the model says. A fault the model is unsure of, or cannot describe, is not a flag. A check that could not run makes the clip "not fully checked", never "pass". Any flag sends the clip back: the motion prompt is rewritten from the flags and the clip is rendered again, up to `videoAttempts` (default 2). The best clip is kept.
+
+The motion criteria live in [rubric.video.md](rubric.video.md), separate from the still rubric.
+
+**Tested by injecting known faults.** I had no labelled set of bad AI clips, so `bun run verify-video <clip> --inject all` puts six known faults into a real clip with ffmpeg and reports which are caught. On four public sample clips from fal's model pages (Veo 3.1, Kling 2.1, Wan 2.2, Hailuo 02):
+
+| Injected fault | Caught by the measurements |
+|---|---|
+| First frame held for the whole clip | 4 of 4 |
+| First frame held for 1.5s | 4 of 4 |
+| A third of the clip removed (jump cut) | 4 of 4 |
+| Whole frame brightens for one frame | 4 of 4 |
+| White block a quarter of the frame wide, one frame | 4 of 4 |
+| Grey block a tenth of the frame wide, one frame | 0 of 4 |
+
+The four clean clips raised no alarm. On a fifth sample (Kling v4, multi-shot, handheld action) it reported five jumps, and each is a real cut when viewed frame by frame. It also raised two one-frame pops there; one of them is camera shake. That is what the model step is for: a pop or a jump is a place to look, and it becomes a flag only if the model sees a fault.
+
+**What this does not show yet:**
+- **The model checks have only run against the mock.** The build machine had no fal key, so the four vision questions are untested on real clips. `bun run smoke --video` runs the whole path once; `--inject pop --idea "..."` shows whether the model names a fault it is shown.
+- **Morphing and identity drift are gradual,** so no measurement catches them. They depend entirely on the model seeing the right frames.
+- **A one-frame change smaller than about 2% of the frame is missed.** At that size it cannot be told apart from a fast-moving hand.
+- **Thresholds come from five clips.** They are in one block at the top of `signals.ts`.
+- **Sound is not checked.**
+
 ## Run it
 
-Needs [Bun](https://bun.sh) 1.3+.
+Needs [Bun](https://bun.sh) 1.3+. Checking video also needs [ffmpeg](https://ffmpeg.org) on your PATH (`brew install ffmpeg`); without it clips are still rendered, and the trace says they were not checked.
 
 ```bash
 bun install
@@ -230,9 +284,13 @@ bun run smoke --parallel 6
 | Command | What it does |
 |---|---|
 | `bun run start` | Server without file watching (use this for live demos) |
-| `bun run harness briefs/example-coffee.md` | Run from the terminal. Flags: `--video`, `--concepts N`, `--finalists K`, `--iters N` |
+| `bun run harness briefs/example-coffee.md` | Run from the terminal. Flags: `--video`, `--video-attempts N`, `--concepts N`, `--finalists K`, `--iters N` |
 | `bun run check` | Typecheck and tests (always mock, never spends) |
-| `bun run smoke --video` / `--all` | Also test the video model / every model |
+| `bun run smoke --video` / `--all` | Also test the video model and the video verifier / every model |
+| `bun run verify-video clip.mp4` | Measure every frame of any clip, file or URL. No key, no cost |
+| `bun run verify-video clip.mp4 --idea "..."` | Full check: measurements plus the vision-model checks |
+| `bun run verify-video clip.mp4 --inject all` | Put known faults into the clip and report which are caught |
+| `bun run verify-video <runId>` | Re-check a saved run's clips with the current rubric and prompts |
 | `bun run recritique <runs>` | Re-score saved renders with the current critic and rubric (one vision call each) |
 | `bun run compare --a <runs> --b <runs>` | Blind A/B test of saved runs' final images, both orders (about half a cent per judgement) |
 
@@ -245,27 +303,33 @@ LLM calls go through fal's OpenRouter router, so one `FAL_KEY` covers image, vid
 | `src/harness/director.ts` | Writes diverse concepts |
 | `src/harness/selector.ts` | Pairwise judge, Swiss and round-robin tournaments |
 | `src/harness/critic.ts` | Vision critic, rubric enforcement, reviser |
+| `src/harness/verifier.ts` | Video verifier: chooses frames, asks the model, decides the verdict in code; motion reviser |
+| `src/video/signals.ts` | Measurements on every frame, and the thresholds |
+| `src/video/clip.ts`, `src/video/inject.ts` | ffmpeg: decode a clip, pull stills; inject known faults |
 | `src/harness/loop.ts` | Orchestration, failure handling |
 | `src/models.ts` | Every fal model: input builder, output picker, cost estimate. `ROLES` maps jobs to models |
-| `src/prompts.ts`, `rubric.md` | All prompt wording and the judging criteria, kept out of the loop code |
+| `src/prompts.ts`, `rubric.md`, `rubric.video.md` | All prompt wording and the judging criteria for stills and for motion, kept out of the loop code |
 | `src/llm.ts`, `src/fal.ts` | LLM calls with JSON validation and retry; the rate-limited fal client |
 | `src/trace.ts` | Run state and events, saved to `runs/<id>.json` |
 | `src/server.ts`, `public/index.html` | API and single-page live UI |
 | `src/util/stock.ts` | Strips stock-photography vocabulary from image prompts |
 | `scripts/compare.ts`, `scripts/recritique.ts` | Blind pairwise A/B test of saved runs; re-score saved renders |
+| `scripts/verify-video.ts` | Check any clip outside a run; test the verifier against injected faults |
 | `src/mock.ts` | Offline mock LLM with failure injection and scriptable critic |
 | `test/` | Tournament fairness, rubric enforcement, end-to-end and failure-path tests |
 
 ## Cost and speed
 
-Measured over seven live runs with defaults (8 concepts, 3 finalists, up to 3 revisions each): **159 to 280 seconds, $0.30 to $0.39, 50 to 64 calls**. Most of the time goes on LLM calls at concurrency 2. Video adds about $0.20 for 5 seconds. The spend counter uses fal's reported LLM cost plus per-model estimates, so treat it as a guide.
+Measured over seven live runs with defaults (8 concepts, 3 finalists, up to 3 revisions each): **159 to 280 seconds, $0.30 to $0.39, 50 to 64 calls**. Most of the time goes on LLM calls at concurrency 2. Video adds about $0.20 per 5-second clip plus up to six vision calls to check it, and a flagged clip is rendered again (two attempts by default). Those video figures are estimates from fal's prices, not measured. The spend counter uses fal's reported LLM cost plus per-model estimates, so treat it as a guide.
 
 ## Ideas not built yet
 
 - **Revise with image edits, not re-rolls**: pass the previous image and fixes to an edit model so v2 keeps what worked.
 - **Attention predictor**: a separate judge that only scores "would I stop scrolling in the first second".
 - **Storyboarded video**: Kling v4 takes start, end and middle keyframes.
-- **Sound**: voiceover, music, or audio added to a silent clip.
+- **Sound**: voiceover, music, or audio added to a silent clip. The video verifier does not listen to the clip either.
+- **Check the verifier against people**: have a few people mark faults in the same clips and report how often the verifier agrees.
+- **Gradual faults by measurement**: a slow morph leaves no spike. Tracking an area over a second, not a frame, might find them.
 - **Learn across runs**: keep the critic fixes that raised scores and feed them to the director next time.
 
 ## Licence

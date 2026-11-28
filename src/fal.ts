@@ -17,12 +17,25 @@ export type CallOptions = {
   startTimeoutS?: number
 }
 
+function configure() {
+  if (configured) return
+  if (!config.falKey) throw new Error('FAL_KEY is not set. Add it to .env or run with MOCK=1.')
+  fal.config({ credentials: config.falKey })
+  configured = true
+}
+
+// Uploads are plain storage requests, not model jobs, so they do not count against the account's
+// concurrency. They get a small limiter of their own so a burst of frames does not trip a rate limit.
+const uploadLimit = createLimiter(4)
+
+/** Host a small file (a frame pulled from a clip) on fal storage, so a vision model can fetch it by URL. */
+export async function uploadFile(bytes: Uint8Array, contentType: string): Promise<string> {
+  configure()
+  return uploadLimit(() => fal.storage.upload(new Blob([new Uint8Array(bytes)], { type: contentType })))
+}
+
 export async function callFal(endpoint: string, input: Record<string, unknown>, opts: CallOptions = {}): Promise<FalResult> {
-  if (!configured) {
-    if (!config.falKey) throw new Error('FAL_KEY is not set. Add it to .env or run with MOCK=1.')
-    fal.config({ credentials: config.falKey })
-    configured = true
-  }
+  configure()
   return falLimit(async () => {
     const t0 = performance.now()
     try {
